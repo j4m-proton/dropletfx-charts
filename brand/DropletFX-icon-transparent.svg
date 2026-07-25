@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+<defs>
+  <linearGradient id="badgeGrad" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0" stop-color="#F50512"/>
+    <stop offset="1" stop-color="#C2000E"/>
+  </linearGradient>
+  <filter id="glow" x="-30%" y="-30%" width="160%" height="160%">
+    <feGaussianBlur stdDeviation="47.9" result="b"/>
+    <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+  </filter>
+</defs>
+
+<g filter="url(#glow)">
+  <rect x="112.64" y="112.64" width="798.72" height="798.72" rx="187.70" ry="187.70" fill="url(#badgeGrad)"/>
+</g>
+<g transform="translate(156.85,645.60) scale(0.13047,-0.13047)"><path d="M912 0H155V2048H911Q1224 2048 1450.5 1925.5Q1677 1803 1800.0 1573.5Q1923 1344 1923 1025Q1923 705 1800.5 475.0Q1678 245 1451.0 122.5Q1224 0 912 0ZM650 422H893Q1065 422 1184.5 480.5Q1304 539 1365.5 671.5Q1427 804 1427 1025Q1427 1246 1365.0 1377.5Q1303 1509 1182.5 1567.5Q1062 1626 886 1626H650Z" fill="#FFFFFF"/></g>
+<g transform="translate(410.40,645.60) scale(0.13047,-0.13047)"><path d="M155 0V2048H1553V1646H650V1226H1464V823H650V0Z" fill="#FFFFFF"/></g>
+<g transform="translate(610.47,645.60) scale(0.13047,-0.13047)"><path d="M656 2048 1030 1401H1046L1424 2048H1978L1360 1024L1998 0H1430L1046 654H1030L646 0H82L717 1024L98 2048Z" fill="#FFFFFF"/></g>
+</svg>

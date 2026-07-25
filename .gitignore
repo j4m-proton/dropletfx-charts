@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Node / Electron
+node_modules/
+desktop/node_modules/
+
+# Electron build output (installers, packed app)
+desktop/release/
+desktop/dist/
+
+# Runtime config that may hold secrets (Google client secret, tokens)
+config.json
+*.env
+.env
+.env.*
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+
+# Local Claude Code settings
+.claude/settings.local.json

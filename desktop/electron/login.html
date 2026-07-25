@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="en" class="h-full">
+<head>
+<meta charset="utf-8">
+<title>DropletFX — Sign in</title>
+<style>
+  :root {
+    --bg: #000; --panel: #0b0b0f; --edge: #1e1e24; --ink: #e6e8ef;
+    --muted: #8b8f9a; --subtle: #5c606b; --accent: #f50512; --up: #00e676;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    background: var(--bg); color: var(--ink);
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    font: 14px/1.45 ui-sans-serif, "Segoe UI", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased; user-select: none; overflow-y: auto;
+    background-image: radial-gradient(120% 90% at 50% 0%, #14141b 0%, #000 65%);
+    -webkit-app-region: drag; padding: 28px 0;
+  }
+  /* Same crop as the launcher: the source SVG is 1024² with the wordmark
+     occupying only 943×226 at (40,399), so scale to that content box. */
+  .logo { position: relative; width: 232px; height: 56px; overflow: hidden; flex-shrink: 0; }
+  .logo img { position: absolute; left: -10px; top: -98px; width: 252px; max-width: none; }
+
+  h1 { font-size: 19px; font-weight: 700; margin-top: 22px; letter-spacing: -.01em; }
+  .lead { color: var(--muted); font-size: 12.5px; margin-top: 5px; }
+
+  .card {
+    -webkit-app-region: no-drag;
+    margin-top: 24px; width: 372px; padding: 26px 28px 28px;
+    background: var(--panel); border: 1px solid var(--edge); border-radius: 16px;
+  }
+  label { display: block; font-size: 12px; font-weight: 500; color: var(--muted); margin-bottom: 6px; }
+  .field { position: relative; margin-bottom: 15px; }
+  .field input {
+    width: 100%; height: 44px; border-radius: 11px; padding: 0 13px;
+    background: #101016; border: 1px solid var(--edge); color: var(--ink);
+    font: inherit; font-size: 13.5px; outline: none; transition: border-color .12s;
+  }
+  .field input::placeholder { color: var(--subtle); }
+  .field input:focus { border-color: #3a3a46; }
+  .field input:disabled { opacity: .5; }
+
+  button { font: inherit; cursor: pointer; }
+  #submit {
+    width: 100%; height: 46px; border-radius: 11px; border: 0; margin-top: 6px;
+    background: var(--accent); color: #fff; font-size: 13.5px; font-weight: 600;
+    display: flex; align-items: center; justify-content: center; gap: 9px;
+    transition: opacity .12s;
+  }
+  #submit:hover:not(:disabled) { opacity: .9; }
+  #submit:disabled { opacity: .45; cursor: default; }
+
+  .divider { display: flex; align-items: center; gap: 12px; margin: 20px 0; }
+  .divider span { color: var(--subtle); font-size: 10.5px; letter-spacing: .09em; text-transform: uppercase; }
+  .divider i { flex: 1; height: 1px; background: var(--edge); }
+
+  #google {
+    width: 100%; height: 46px; border-radius: 11px; border: 1px solid rgba(255,255,255,.15);
+    background: rgba(255,255,255,.04); color: var(--ink);
+    display: flex; align-items: center; justify-content: center; gap: 11px;
+    font-size: 13.5px; font-weight: 600; transition: background .12s;
+  }
+  #google:hover:not(:disabled) { background: rgba(255,255,255,.08); }
+  #google:disabled { opacity: .45; cursor: default; }
+  #google svg { flex-shrink: 0; }
+
+  .spinner {
+    width: 15px; height: 15px; border-radius: 50%; flex-shrink: 0;
+    border: 2px solid rgba(255,255,255,.25); border-top-color: currentColor;
+    animation: spin .7s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  #gHint {
+    margin-top: 10px; font-size: 11.5px; line-height: 1.55; color: var(--subtle); text-align: center;
+  }
+  #gHint code {
+    font-family: ui-monospace, Consolas, monospace; font-size: 11px;
+    color: var(--muted); background: rgba(255,255,255,.05); padding: 1px 5px; border-radius: 4px;
+  }
+  #gHint button {
+    background: none; border: 0; padding: 0; font: inherit; font-size: 11.5px;
+    color: var(--muted); text-decoration: underline;
+  }
+  #gHint button:hover { color: var(--ink); }
+  #msg { margin-top: 15px; font-size: 12.5px; line-height: 1.5; display: none; border-radius: 10px; padding: 10px 12px; }
+  #msg.show { display: block; }
+  #msg.err { color: #ff6b74; background: rgba(245,5,18,.09); border: 1px solid rgba(245,5,18,.28); }
+  #msg.info { color: var(--muted); background: rgba(255,255,255,.03); border: 1px solid var(--edge); }
+
+  .signup { -webkit-app-region: no-drag; margin-top: 20px; color: var(--muted); font-size: 12.5px; }
+  .signup button { background: none; border: 0; color: var(--accent); font-weight: 600; font-size: 12.5px; padding: 0; }
+  .signup button:hover { text-decoration: underline; }
+
+  .foot {
+    -webkit-app-region: no-drag;
+    margin-top: 18px; display: flex; align-items: center; gap: 14px;
+    color: var(--subtle); font-size: 11px;
+  }
+  .foot button { background: none; border: 0; color: var(--subtle); font-size: 11px; text-decoration: underline; padding: 0; }
+  .foot button:hover { color: var(--ink); }
+  .host { font-family: ui-monospace, Consolas, monospace; }
+</style>
+</head>
+<body>
+  <span class="logo"><img src="../build/splash-logo.svg" alt="DropletFX"></span>
+  <h1>Welcome back</h1>
+  <div class="lead">Sign in to your DropletFX account</div>
+
+  <div class="card">
+    <form id="form" autocomplete="on">
+      <label for="email">Email</label>
+      <div class="field">
+        <input id="email" name="email" type="email" required autofocus
+               placeholder="you@email.com" autocomplete="username">
+      </div>
+
+      <label for="password">Password</label>
+      <div class="field">
+        <input id="password" name="password" type="password" required
+               placeholder="••••••••" autocomplete="current-password">
+      </div>
+
+      <button id="submit" type="submit"><span id="submitLabel">Sign in</span></button>
+    </form>
+
+    <div class="divider"><i></i><span>or</span><i></i></div>
+
+    <button id="google" type="button">
+      <svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true">
+        <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
+        <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>
+        <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>
+        <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
+      </svg>
+      <span id="googleLabel">Continue with Google</span>
+    </button>
+
+    <div id="gHint" hidden>
+      Google sign-in needs a client secret. Add <code>googleClientSecret</code> to
+      <button id="openConfig" type="button">config.json</button> and restart.
+    </div>
+
+    <div id="msg"></div>
+  </div>
+
+  <div class="signup">Don't have an account? <button id="signup" type="button">Sign up</button></div>
+
+  <div class="foot">
+    <span class="host" id="host"></span>
+    <button id="quit">Quit</button>
+  </div>
+
+<script>
+  const form = document.getElementById('form');
+  const email = document.getElementById('email');
+  const password = document.getElementById('password');
+  const submit = document.getElementById('submit');
+  const submitLabel = document.getElementById('submitLabel');
+  const google = document.getElementById('google');
+  const googleLabel = document.getElementById('googleLabel');
+  const gIcon = google.querySelector('svg');
+  const msg = document.getElementById('msg');
+
+  let googleOk = true;
+
+  function show(text, kind) { msg.textContent = text; msg.className = 'show ' + kind; }
+  function hide() { msg.className = ''; }
+
+  /** Spinner inside a button, and lock the whole form while either path runs. */
+  function busy(btn, on, label, idle) {
+    let sp = btn.querySelector('.spinner');
+    if (on && !sp) {
+      sp = document.createElement('span');
+      sp.className = 'spinner';
+      btn.insertBefore(sp, btn.firstChild);
+    } else if (!on && sp) {
+      sp.remove();
+    }
+    label.textContent = on ? label.dataset.busy : idle;
+  }
+
+  function lock(on, which) {
+    email.disabled = password.disabled = on;
+    submit.disabled = on;
+    google.disabled = on || !googleOk;
+    if (which === 'google') gIcon.style.display = on ? 'none' : '';
+  }
+
+  submitLabel.dataset.busy = 'Signing in…';
+  googleLabel.dataset.busy = 'Waiting for your browser…';
+
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    hide();
+    lock(true, 'password');
+    busy(submit, true, submitLabel, 'Sign in');
+    try {
+      await window.dfxAuth.signInWithPassword(email.value, password.value);
+      busy(submit, false, submitLabel, 'Signed in');
+      show('Signed in. Opening your windows…', 'info');
+      password.value = '';
+    } catch (err) {
+      lock(false, 'password');
+      busy(submit, false, submitLabel, 'Sign in');
+      show((err && err.message) || 'Sign-in failed. Please try again.', 'err');
+      password.focus();
+      password.select();
+    }
+  };
+
+  google.onclick = async () => {
+    hide();
+    lock(true, 'google');
+    busy(google, true, googleLabel, 'Continue with Google');
+    show('A browser tab has opened. Finish signing in there, then come back.', 'info');
+    try {
+      await window.dfxAuth.signIn();
+      busy(google, false, googleLabel, 'Signed in');
+      gIcon.style.display = '';
+      show('Signed in. Opening your windows…', 'info');
+    } catch (err) {
+      lock(false, 'google');
+      busy(google, false, googleLabel, 'Continue with Google');
+      gIcon.style.display = '';
+      show((err && err.message) || 'Sign-in failed. Please try again.', 'err');
+    }
+  };
+
+  document.getElementById('openConfig').onclick = () => window.dfxAuth.revealConfig();
+  document.getElementById('signup').onclick = () => window.dfxAuth.openWeb('/signup/');
+  document.getElementById('quit').onclick = () => window.dfxAuth.quit();
+
+  (async () => {
+    const s = await window.dfxAuth.session();
+    document.getElementById('host').textContent = (s.apiBase || '').replace(/^https?:\/\//, '');
+    googleOk = await window.dfxAuth.configured();
+    if (!googleOk) {
+      // Email/password still works — only the Google button is unavailable.
+      google.disabled = true;
+      document.getElementById('gHint').hidden = false;
+    }
+  })();
+</script>
+</body>
+</html>

@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Level rejection — is this your system?</title>
+<style>
+  body { margin:0; background:#000; color:#e6e8ef; font:14px system-ui,"Segoe UI",sans-serif; padding:18px 22px; }
+  h1 { font-size:17px; margin:0 0 4px; }
+  p.sub { margin:0 0 16px; color:#b8b8b8; font-size:12px; }
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+  .card { border:1px solid #1e1e1e; border-radius:6px; padding:8px 10px 4px; background:#0b0b0f; }
+  .hd { display:flex; justify-content:space-between; font:12px ui-monospace,Consolas,monospace; margin-bottom:4px; }
+  .win { color:#00e676; font-weight:700; } .loss { color:#ff453a; font-weight:700; }
+  canvas { display:block; width:100%; height:250px; }
+  .key { margin-top:14px; font:12px ui-monospace,Consolas,monospace; color:#b8b8b8; line-height:1.9; }
+  .sw { display:inline-block; width:22px; height:3px; vertical-align:middle; margin-right:7px; }
+</style>
+</head>
+<body>
+<h1>Level rejection on Step Index 1-minute — is this your system?</h1>
+<p class="sub">Levels marked from 30-minute structure. Price trades up into the level, a candle closes back below it, short from that close. Stop just above the level, target the next level down.</p>
+<div class="grid" id="grid"></div>
+<div class="key">
+  <span class="sw" style="background:#ffb020"></span>the level, taken from 30-minute structure<br>
+  <span class="sw" style="background:#ffd400"></span>REJECTION — candle traded into the level and closed back below it → entry at that close<br>
+  <span class="sw" style="background:#ff453a"></span>stop, just above the level &nbsp;&nbsp;
+  <span class="sw" style="background:#00e676"></span>target — the next level down<br>
+  dotted vertical line = where the trade finished
+</div>
+
+<script>
+fetch('/static/levels.json').then(r => r.json()).then(list => {
+  const grid = document.getElementById('grid');
+  list.forEach((ex, n) => {
+    const card = document.createElement('div');
+    card.className = 'card';
+    card.innerHTML = `<div class="hd"><span>${n + 1}. SHORT @ ${ex.ep} · level ${ex.level} · R:R 1:${ex.rr}</span>
+      <span class="${ex.win ? 'win' : 'loss'}">${ex.win ? 'TARGET HIT' : 'STOPPED'}</span></div>`;
+    const cv = document.createElement('canvas');
+    card.appendChild(cv); grid.appendChild(card); render(cv, ex);
+  });
+});
+
+function render(cv, ex) {
+  const dpr = devicePixelRatio || 1, W = cv.clientWidth, H = cv.clientHeight;
+  cv.width = W * dpr; cv.height = H * dpr;
+  const g = cv.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const bars = ex.bars, PADR = 56, PADT = 8, PADB = 8;
+
+  let lo = Infinity, hi = -Infinity;
+  for (const b of bars) { lo = Math.min(lo, b[2]); hi = Math.max(hi, b[1]); }
+  for (const v of [ex.tp, ex.sl, ex.level]) { lo = Math.min(lo, v); hi = Math.max(hi, v); }
+  const pad = (hi - lo) * 0.07; lo -= pad; hi += pad;
+
+  const x = i => (i + 0.5) * (W - PADR) / bars.length;
+  const y = p => PADT + (hi - p) / (hi - lo) * (H - PADT - PADB);
+  const bw = Math.max(1.5, (W - PADR) / bars.length * 0.6);
+
+  const line = (p, col, dash, label, wide) => {
+    g.save(); g.setLineDash(dash); g.strokeStyle = col; g.lineWidth = wide || 1;
+    g.beginPath(); g.moveTo(0, y(p)); g.lineTo(W - PADR, y(p)); g.stroke(); g.restore();
+    g.fillStyle = col; g.font = '10px ui-monospace,Consolas,monospace';
+    g.textBaseline = 'middle'; g.fillText(label, W - PADR + 4, y(p));
+  };
+  line(ex.level, '#ffb020', [6, 3], 'level ' + ex.level, 1.5);
+  line(ex.sl, '#ff453a', [3, 3], 'SL');
+  line(ex.tp, '#00e676', [3, 3], 'TP');
+
+  bars.forEach((b, i) => {
+    const [o, hh, ll, c] = b, up = c >= o;
+    g.strokeStyle = g.fillStyle = up ? '#00e676' : '#2979ff'; g.lineWidth = 1;
+    g.beginPath(); g.moveTo(Math.round(x(i)) + .5, y(hh)); g.lineTo(Math.round(x(i)) + .5, y(ll)); g.stroke();
+    const top = Math.min(y(o), y(c)), ht = Math.max(1, Math.abs(y(c) - y(o)));
+    g.fillRect(Math.round(x(i) - bw / 2), Math.round(top), Math.round(bw), Math.round(ht));
+  });
+
+  // highlight the rejection candle
+  const r = ex.rej;
+  g.strokeStyle = '#ffd400'; g.lineWidth = 1.5;
+  g.strokeRect(x(r) - bw, y(bars[r][1]) - 3, bw * 2, y(bars[r][2]) - y(bars[r][1]) + 6);
+  g.fillStyle = '#ffd400'; g.font = 'bold 9px ui-monospace,Consolas,monospace';
+  g.textAlign = 'center'; g.fillText('REJECTION', x(r), y(bars[r][1]) - 8); g.textAlign = 'left';
+
+  g.save(); g.setLineDash([2, 2]); g.strokeStyle = ex.win ? '#00e676' : '#ff453a';
+  g.beginPath(); g.moveTo(x(ex.exitbar), PADT); g.lineTo(x(ex.exitbar), H - PADB); g.stroke(); g.restore();
+}
+</script>
+</body>
+</html>

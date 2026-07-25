@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>What "break of structure + retest" means here</title>
+<style>
+  body { margin:0; background:#000; color:#e6e8ef; font:14px system-ui, "Segoe UI", sans-serif; padding:18px 22px; }
+  h1 { font-size:17px; margin:0 0 4px; }
+  p.sub { margin:0 0 16px; color:#b8b8b8; font-size:12px; }
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+  .card { border:1px solid #1e1e1e; border-radius:6px; padding:8px 10px 4px; background:#0b0b0f; }
+  .hd { display:flex; justify-content:space-between; align-items:baseline; font:12px ui-monospace,Consolas,monospace; margin-bottom:4px; }
+  .win { color:#00e676; font-weight:700; } .loss { color:#ff453a; font-weight:700; }
+  canvas { display:block; width:100%; height:230px; }
+  .key { margin-top:14px; font:12px ui-monospace,Consolas,monospace; color:#b8b8b8; line-height:1.9; }
+  .sw { display:inline-block; width:22px; height:3px; vertical-align:middle; margin-right:7px; }
+</style>
+</head>
+<body>
+<h1>The setup I have been testing — is this yours?</h1>
+<p class="sub">Real Step Index 1-minute bars. Amber = the structure level that broke · white dot = break · yellow dot = retest entry · red = 10-pip stop · green = 40-pip target.</p>
+<div class="grid" id="grid"></div>
+<div class="key">
+  <span class="sw" style="background:#ffb020"></span>structure level — the swing high/low price closed through<br>
+  <span class="sw" style="background:#ffffff"></span>BREAK — close pushes past that level, setup arms<br>
+  <span class="sw" style="background:#ffd400"></span>RETEST — price comes back to the level and closes back on the break side → entry<br>
+  <span class="sw" style="background:#ff453a"></span>stop loss, 10 pips &nbsp;&nbsp; <span class="sw" style="background:#00e676"></span>take profit, 40 pips
+</div>
+
+<script>
+fetch('/static/pattern.json').then(r => r.json()).then(draw);
+
+function draw(examples) {
+  const grid = document.getElementById('grid');
+  examples.forEach((ex, n) => {
+    const card = document.createElement('div');
+    card.className = 'card';
+    card.innerHTML = `<div class="hd"><span>${n + 1}. ${ex.side.toUpperCase()} · entry ${ex.ep}</span>
+        <span class="${ex.win ? 'win' : 'loss'}">${ex.win ? 'TP HIT' : 'STOPPED'}</span></div>`;
+    const cv = document.createElement('canvas');
+    card.appendChild(cv);
+    grid.appendChild(card);
+    render(cv, ex);
+  });
+}
+
+function render(cv, ex) {
+  const dpr = devicePixelRatio || 1;
+  const W = cv.clientWidth, H = cv.clientHeight;
+  cv.width = W * dpr; cv.height = H * dpr;
+  const g = cv.getContext('2d');
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+  const bars = ex.bars, PADR = 52, PADB = 6, PADT = 6;
+  let lo = Infinity, hi = -Infinity;
+  for (const b of bars) { lo = Math.min(lo, b[2]); hi = Math.max(hi, b[1]); }
+  for (const v of [ex.tp, ex.sl, ex.level]) { lo = Math.min(lo, v); hi = Math.max(hi, v); }
+  const pad = (hi - lo) * 0.08; lo -= pad; hi += pad;
+
+  const x = i => (i + 0.5) * (W - PADR) / bars.length;
+  const y = p => PADT + (hi - p) / (hi - lo) * (H - PADT - PADB);
+  const bw = Math.max(1.5, (W - PADR) / bars.length * 0.62);
+
+  const line = (p, col, dash, label) => {
+    g.save(); g.setLineDash(dash); g.strokeStyle = col; g.lineWidth = 1;
+    g.beginPath(); g.moveTo(0, y(p)); g.lineTo(W - PADR, y(p)); g.stroke(); g.restore();
+    g.fillStyle = col; g.font = '10px ui-monospace,Consolas,monospace';
+    g.textBaseline = 'middle'; g.fillText(label, W - PADR + 4, y(p));
+  };
+
+  line(ex.level, '#ffb020', [5, 3], 'level');
+  line(ex.tp, '#00e676', [3, 3], 'TP');
+  line(ex.sl, '#ff453a', [3, 3], 'SL');
+
+  bars.forEach((b, i) => {
+    const [o, hh, ll, c] = b;
+    const up = c >= o;
+    g.strokeStyle = g.fillStyle = up ? '#00e676' : '#2979ff';
+    g.lineWidth = 1;
+    g.beginPath(); g.moveTo(Math.round(x(i)) + .5, y(hh)); g.lineTo(Math.round(x(i)) + .5, y(ll)); g.stroke();
+    const top = Math.min(y(o), y(c)), hgt = Math.max(1, Math.abs(y(c) - y(o)));
+    g.fillRect(Math.round(x(i) - bw / 2), Math.round(top), Math.round(bw), Math.round(hgt));
+  });
+
+  const dot = (i, price, col, txt) => {
+    g.beginPath(); g.arc(x(i), y(price), 4.5, 0, 7); g.fillStyle = col; g.fill();
+    g.strokeStyle = '#000'; g.lineWidth = 1.5; g.stroke();
+    g.fillStyle = col; g.font = 'bold 9px ui-monospace,Consolas,monospace';
+    g.textAlign = 'center'; g.fillText(txt, x(i), y(price) - 9); g.textAlign = 'left';
+  };
+  dot(ex.brk, ex.level, '#ffffff', 'BREAK');
+  dot(ex.entry, ex.ep, '#ffd400', 'ENTRY');
+
+  // mark where the trade finished
+  g.save(); g.setLineDash([2, 2]); g.strokeStyle = ex.win ? '#00e676' : '#ff453a';
+  g.beginPath(); g.moveTo(x(ex.exitbar), PADT); g.lineTo(x(ex.exitbar), H - PADB); g.stroke(); g.restore();
+}
+</script>
+</body>
+</html>

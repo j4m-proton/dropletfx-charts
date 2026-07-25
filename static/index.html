@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DropletFX Charts</title>
+<link rel="icon" type="image/svg+xml" href="/brand/DropletFX-icon-transparent.svg">
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+tailwind.config = {
+  darkMode: 'class',
+  // Pure-black surface, green/blue candles, DropletFX red as the accent
+  // (#F50512 → #C2000E is the logo's badge gradient; #0B0B0F its dark surface).
+  theme: { extend: { colors: {
+    shell:  { DEFAULT: '#ffffff', dark: '#000000' },
+    panel:  { DEFAULT: '#f2f3f4', dark: '#0b0b0f' },
+    edge:   { DEFAULT: '#d6d9e0', dark: '#1e1e1e' },
+    ink:    { DEFAULT: '#15212d', dark: '#e6e8ef' },
+    muted:  { DEFAULT: '#6e6e6e', dark: '#b8b8b8' },
+    up:     '#00e676',
+    down:   '#2979ff',
+    accent: '#f50512',
+    // P&L is a status encoding, reserved and separate from candle direction —
+    // a losing trade is red even though a down candle is blue.
+    profit: { DEFAULT: '#00a854', dark: '#00e676' },
+    loss:   { DEFAULT: '#cf1322', dark: '#ff453a' },
+  }, fontFamily: { mono: ['ui-monospace','SFMono-Regular','Menlo','Consolas','monospace'] } } }
+}
+</script>
+<style>
+  html, body { height: 100%; overscroll-behavior: none; }
+  canvas { display: block; touch-action: none; }
+  select { background-image: none; }
+
+  /* Loading mark: the DFX badge with brand-red waves radiating out of it,
+     echoing the desktop splash. */
+  .dfx-loader { position: relative; display: grid; place-items: center; width: 120px; height: 120px; }
+  .dfx-loader img {
+    width: 54px; height: 54px; z-index: 1;
+    filter: drop-shadow(0 6px 22px rgba(245, 5, 18, 0.45));
+  }
+  .dfx-loader span {
+    position: absolute; inset: 0; margin: auto;
+    width: 58px; height: 58px; border-radius: 9999px;
+    border: 2px solid #f50512; opacity: 0;
+    animation: dfx-wave 2.4s cubic-bezier(0.2, 0.6, 0.3, 1) infinite;
+  }
+  .dfx-loader span:nth-child(2) { animation-delay: 0.8s; }
+  .dfx-loader span:nth-child(3) { animation-delay: 1.6s; }
+  @keyframes dfx-wave {
+    0%   { transform: scale(0.78); opacity: 0.7; }
+    70%  { opacity: 0.1; }
+    100% { transform: scale(2.05); opacity: 0; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .dfx-loader span { animation-duration: 6s; }
+  }
+
+  /* In the desktop shell the native window controls (minimise / maximise /
+     close) are painted as an overlay across the top-right of the page, which
+     would sit on top of the last toolbar buttons.  Reserve that strip so the
+     theme / Save / Reset controls stay clickable. */
+  body.desktop-shell header { padding-right: 150px; }
+
+  /* Watching someone else's live session. The drawing tools are dimmed and
+     inert rather than hidden, so it reads as "not yours to edit yet" instead
+     of looking like a broken build — they come back when the session ends. */
+  body.live-readonly #tools,
+  body.live-readonly #clear { opacity: .38; pointer-events: none; }
+  body.live-readonly #chart { cursor: grab; }
+  /* Pulse the live dot so a glance tells you the session is still connected. */
+  #live-banner[data-tone="live"] #live-dot { animation: livePulse 1.8s ease-in-out infinite; }
+  #live-banner[data-tone="warn"] #live-dot { background: #f59e0b; }
+  #live-banner[data-tone="ended"] #live-dot,
+  #live-banner[data-tone="error"] #live-dot { background: #6b7280; animation: none; }
+  @keyframes livePulse { 0%,100% { opacity: 1 } 50% { opacity: .25 } }
+</style>
+</head>
+
+<body class="h-full bg-white dark:bg-shell-dark text-ink dark:text-ink-dark font-sans antialiased select-none">
+<div class="flex h-full flex-col overflow-hidden">
+
+  <!-- ── top bar ─────────────────────────────────────────────────────── -->
+  <header class="flex flex-wrap items-center gap-2 border-b border-edge dark:border-edge-dark
+                 bg-panel dark:bg-panel-dark px-3 py-2 text-sm">
+
+    <!-- Brand lockup. The source SVGs are 1024² with the wordmark centred, so
+         the wrapper crops to the measured content box (943×226 at 40,399). -->
+    <span class="relative block h-[28px] w-[117px] shrink-0 overflow-hidden" title="DropletFX">
+      <img src="/brand/DropletFX-logo-transparent.svg" alt="DropletFX"
+           class="absolute left-[-5px] top-[-49px] hidden w-[127px] max-w-none dark:block">
+      <img src="/brand/DropletFX-logo-transparent-darktext.svg" alt="DropletFX"
+           class="absolute left-[-5px] top-[-49px] w-[127px] max-w-none dark:hidden">
+    </span>
+
+    <div class="mx-1 h-6 w-px bg-edge dark:bg-edge-dark"></div>
+
+    <select id="symbol"
+            class="h-8 min-w-[13rem] cursor-pointer rounded border border-edge dark:border-edge-dark
+                   bg-white dark:bg-shell-dark px-2 font-medium text-ink dark:text-ink-dark
+                   outline-none focus:border-accent"></select>
+
+    <div class="mx-1 h-6 w-px bg-edge dark:bg-edge-dark"></div>
+
+    <!-- timeframes -->
+    <select id="timeframes"
+            class="h-8 min-w-[6.5rem] cursor-pointer rounded border border-edge dark:border-edge-dark
+                   bg-white dark:bg-shell-dark px-2 font-medium text-ink dark:text-ink-dark
+                   outline-none focus:border-accent"></select>
+
+    <div class="mx-1 h-6 w-px bg-edge dark:bg-edge-dark"></div>
+
+    <!-- tools -->
+    <div id="tools" class="flex items-center gap-0.5">
+      <button data-tool="cursor" title="Cursor  (Esc)"
+              class="tool h-8 w-8 rounded text-muted dark:text-muted-dark hover:bg-edge dark:hover:bg-edge-dark">
+        <svg viewBox="0 0 24 24" class="mx-auto h-4 w-4 fill-current"><path d="M5 3l14 8-6 1.6L9.9 19 5 3z"/></svg>
+      </button>
+      <button data-tool="measure" title="Measure — drag to read pips / % / bars  (E)"
+              class="tool h-8 w-8 rounded text-muted dark:text-muted-dark hover:bg-edge dark:hover:bg-edge-dark">
+        <svg viewBox="0 0 24 24" class="mx-auto h-4 w-4" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M3 15L15 3l6 6L9 21z" stroke-linejoin="round"/>
+          <path d="M7 11l2 2M10 8l2 2M13 5l2 2" stroke-linecap="round"/>
+        </svg>
+      </button>
+      <button data-tool="trend" title="Trend line  (T)"
+              class="tool h-8 w-8 rounded text-muted dark:text-muted-dark hover:bg-edge dark:hover:bg-edge-dark">
+        <svg viewBox="0 0 24 24" class="mx-auto h-4 w-4" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M4 19L20 5" stroke-linecap="round"/><circle cx="4.5" cy="18.5" r="2.2"/><circle cx="19.5" cy="5.5" r="2.2"/>
+        </svg>
+      </button>
+      <button data-tool="ray" title="Ray — extends right  (R)"
+              class="tool h-8 w-8 rounded text-muted dark:text-muted-dark hover:bg-edge dark:hover:bg-edge-dark">
+        <svg viewBox="0 0 24 24" class="mx-auto h-4 w-4" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M4 18L21 6" stroke-linecap="round"/><circle cx="4.5" cy="17.5" r="2.2"/>
+        </svg>
+      </button>
+      <button data-tool="hline" title="Horizontal line — one click  (H)"
+              class="tool h-8 w-8 rounded text-muted dark:text-muted-dark hover:bg-edge dark:hover:bg-edge-dark">
+        <svg viewBox="0 0 24 24" class="mx-auto h-4 w-4" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M3 12h18" stroke-linecap="round"/><circle cx="12" cy="12" r="2.2" fill="currentColor"/>
+        </svg>
+      </button>
+      <button data-tool="hray" title="Horizontal ray — from click rightward"
+              class="tool h-8 w-8 rounded text-muted dark:text-muted-dark hover:bg-edge dark:hover:bg-edge-dark">
+        <svg viewBox="0 0 24 24" class="mx-auto h-4 w-4" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M8 12h13" stroke-linecap="round"/><circle cx="6" cy="12" r="2.2" fill="currentColor"/>
+        </svg>
+      </button>
+      <button data-tool="rect" title="Zone / rectangle  (Z)"
+              class="tool h-8 w-8 rounded text-muted dark:text-muted-dark hover:bg-edge dark:hover:bg-edge-dark">
+        <svg viewBox="0 0 24 24" class="mx-auto h-4 w-4" fill="none" stroke="currentColor" stroke-width="2">
+          <rect x="4" y="7" width="16" height="10" rx="1"/>
+        </svg>
+      </button>
+      <button data-tool="range" title="Price range — drag between two prices  (P)"
+              class="tool h-8 w-8 rounded text-muted dark:text-muted-dark hover:bg-edge dark:hover:bg-edge-dark">
+        <svg viewBox="0 0 24 24" class="mx-auto h-4 w-4" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M6 4h12M6 20h12M12 6v12M12 6l-2.5 3M12 6l2.5 3M12 18l-2.5-3M12 18l2.5-3"
+                stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </button>
+      <button id="magnet" title="Magnet — snap to OHLC  (M)"
+              class="h-8 w-8 rounded text-muted dark:text-muted-dark hover:bg-edge dark:hover:bg-edge-dark">
+        <svg viewBox="0 0 24 24" class="mx-auto h-4 w-4" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M6 3v9a6 6 0 0012 0V3h-4v9a2 2 0 11-4 0V3H6z" stroke-linejoin="round"/>
+        </svg>
+      </button>
+      <button id="clear" title="Delete selected drawing — or all if none selected  (Del)"
+              class="h-8 w-8 rounded text-muted dark:text-muted-dark hover:bg-edge dark:hover:bg-edge-dark">
+        <svg viewBox="0 0 24 24" class="mx-auto h-4 w-4" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M4 7h16M9 7V5h6v2M7 7l1 13h8l1-13" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </button>
+    </div>
+
+    <div class="mx-1 h-6 w-px bg-edge dark:bg-edge-dark"></div>
+
+    <!-- View controls sit directly after the tools rather than hard-right: the
+         desktop shell paints the native window buttons over the top-right
+         corner, and anything pinned there gets covered. -->
+    <div class="flex items-center gap-2">
+      <button id="hollow" title="Hollow up-candles (shape as well as colour)"
+              class="h-8 rounded px-2 text-xs font-medium text-muted dark:text-muted-dark
+                     hover:bg-edge dark:hover:bg-edge-dark">Hollow</button>
+      <button id="panel-toggle" title="Show / hide the trade panel"
+              class="h-8 w-8 rounded text-muted dark:text-muted-dark hover:bg-edge dark:hover:bg-edge-dark">
+        <svg viewBox="0 0 24 24" class="mx-auto h-4 w-4" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" stroke-linejoin="round"/>
+          <circle cx="12" cy="12" r="3"/>
+        </svg>
+      </button>
+      <button id="new-window" title="Open a new window  (Ctrl+N)"
+              class="h-8 w-8 rounded text-muted dark:text-muted-dark hover:bg-edge dark:hover:bg-edge-dark">
+        <svg viewBox="0 0 24 24" class="mx-auto h-4 w-4" fill="none" stroke="currentColor" stroke-width="2">
+          <rect x="3" y="5" width="18" height="14" rx="2"/><path d="M12 9v6M9 12h6" stroke-linecap="round"/>
+        </svg>
+      </button>
+      <button id="theme" title="Light / dark"
+              class="h-8 w-8 rounded text-muted dark:text-muted-dark hover:bg-edge dark:hover:bg-edge-dark">
+        <svg viewBox="0 0 24 24" class="mx-auto h-4 w-4" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M21 13A9 9 0 1111 3a7 7 0 0010 10z" stroke-linejoin="round"/>
+        </svg>
+      </button>
+      <button id="save" title="Save the chart as a PNG"
+              class="h-8 rounded border border-edge dark:border-edge-dark px-2 text-xs font-medium
+                     text-muted dark:text-muted-dark hover:bg-edge dark:hover:bg-edge-dark">Save</button>
+      <button id="reset" title="Reset zoom"
+              class="h-8 rounded border border-edge dark:border-edge-dark px-2 text-xs font-medium
+                     text-muted dark:text-muted-dark hover:bg-edge dark:hover:bg-edge-dark">Reset</button>
+    </div>
+  </header>
+
+  <div class="flex min-h-0 flex-1">
+  <!-- ── chart ───────────────────────────────────────────────────────── -->
+  <!-- min-w-0: a flex item defaults to min-width:auto and would otherwise
+       refuse to shrink, pushing the trade panel outside the viewport. -->
+  <main id="wrap" class="relative min-h-0 min-w-0 flex-1 bg-white dark:bg-shell-dark">
+    <canvas id="chart" class="absolute inset-0 h-full w-full"></canvas>
+
+    <!-- ── live session bar ─────────────────────────────────────────────
+         Only ever shown in a window opened with ?live=<room>. -->
+    <div id="live-banner" hidden
+         class="absolute left-1/2 top-3 z-20 flex -translate-x-1/2 items-center gap-3
+                rounded-full border px-3.5 py-1.5 text-xs shadow-lg backdrop-blur
+                border-edge dark:border-edge-dark bg-panel/95 dark:bg-panel-dark/95">
+      <span id="live-dot" class="h-2 w-2 flex-shrink-0 rounded-full bg-accent"></span>
+      <span id="live-text" class="font-semibold">Connecting…</span>
+      <span id="live-viewers" class="text-muted dark:text-muted-dark"></span>
+      <button id="live-camera" hidden title="Share your camera"
+              class="h-6 rounded px-2 font-medium text-muted dark:text-muted-dark
+                     hover:bg-edge dark:hover:bg-edge-dark">Camera</button>
+      <button id="live-stop" hidden title="End the session for everyone"
+              class="h-6 rounded bg-accent px-2 font-semibold text-white hover:opacity-90">End</button>
+      <button id="live-leave" hidden title="Leave — you keep the drawings"
+              class="h-6 rounded px-2 font-medium text-muted dark:text-muted-dark
+                     hover:bg-edge dark:hover:bg-edge-dark">Leave</button>
+    </div>
+
+    <!-- host's camera, draggable out of the way -->
+    <div id="live-cam" hidden
+         class="absolute right-4 top-16 z-20 w-52 overflow-hidden rounded-xl border shadow-2xl
+                border-edge dark:border-edge-dark bg-black">
+      <video id="live-video" autoplay playsinline class="block h-auto w-full"></video>
+    </div>
+
+    <div id="live-toast" hidden
+         class="absolute bottom-24 left-1/2 z-20 -translate-x-1/2 rounded-lg px-3 py-2 text-xs
+                text-white shadow-lg" style="background: rgba(0,0,0,.82)"></div>
+
+    <!-- zoom controls — floating at the bottom centre of the chart -->
+    <div class="absolute bottom-9 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1
+                rounded-lg border border-edge dark:border-edge-dark bg-panel/90 dark:bg-panel-dark/90
+                px-1.5 py-1 shadow-lg backdrop-blur">
+      <button id="zoom-out" title="Zoom out  (−)"
+              class="h-8 w-8 rounded text-muted dark:text-muted-dark hover:bg-edge dark:hover:bg-edge-dark">
+        <svg viewBox="0 0 24 24" class="mx-auto h-4 w-4" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5M8 11h6" stroke-linecap="round"/>
+        </svg>
+      </button>
+      <button id="zoom-in" title="Zoom in  (+)"
+              class="h-8 w-8 rounded text-muted dark:text-muted-dark hover:bg-edge dark:hover:bg-edge-dark">
+        <svg viewBox="0 0 24 24" class="mx-auto h-4 w-4" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5M8 11h6M11 8v6" stroke-linecap="round"/>
+        </svg>
+      </button>
+    </div>
+
+    <!-- OHLC legend -->
+    <div id="legend" class="pointer-events-none absolute left-3 top-2 flex flex-wrap items-baseline gap-x-3
+                            gap-y-0.5 font-mono text-xs text-muted dark:text-muted-dark">
+      <span id="lg-title" class="font-sans text-[13px] font-semibold text-ink dark:text-ink-dark"></span>
+      <span id="lg-ohlc" class="flex gap-3"></span>
+    </div>
+
+    <!-- measurement bubble — pips / price / bars, shown while drawing, dragging,
+         or whenever a drawing is selected -->
+    <div id="bubble" class="pointer-events-none absolute hidden rounded border border-edge dark:border-edge-dark
+                            bg-panel/95 dark:bg-panel-dark/95 px-2 py-1 font-mono text-[11px]
+                            text-ink dark:text-ink-dark shadow-lg"></div>
+
+    <!-- style bar for the selected drawing: colour, line style, delete -->
+    <div id="style-bar" class="absolute left-1/2 top-2 hidden -translate-x-1/2 items-center gap-2
+                               rounded-lg border border-edge dark:border-edge-dark bg-panel dark:bg-panel-dark
+                               px-2 py-1.5 shadow-xl flex">
+      <div id="style-colors" class="flex items-center gap-1"></div>
+      <div class="h-5 w-px bg-edge dark:bg-edge-dark"></div>
+      <button data-style="solid" title="Solid"
+              class="stylebtn h-6 rounded px-2 text-muted dark:text-muted-dark hover:bg-edge dark:hover:bg-edge-dark">
+        <svg viewBox="0 0 24 8" class="h-2 w-6"><line x1="1" y1="4" x2="23" y2="4" stroke="currentColor" stroke-width="2"/></svg>
+      </button>
+      <button data-style="dashed" title="Dashed"
+              class="stylebtn h-6 rounded px-2 text-muted dark:text-muted-dark hover:bg-edge dark:hover:bg-edge-dark">
+        <svg viewBox="0 0 24 8" class="h-2 w-6"><line x1="1" y1="4" x2="23" y2="4" stroke="currentColor" stroke-width="2" stroke-dasharray="5 3"/></svg>
+      </button>
+      <button data-style="dotted" title="Dotted"
+              class="stylebtn h-6 rounded px-2 text-muted dark:text-muted-dark hover:bg-edge dark:hover:bg-edge-dark">
+        <svg viewBox="0 0 24 8" class="h-2 w-6"><line x1="1" y1="4" x2="23" y2="4" stroke="currentColor" stroke-width="2" stroke-dasharray="2 3"/></svg>
+      </button>
+      <div class="h-5 w-px bg-edge dark:bg-edge-dark"></div>
+      <button id="style-delete" title="Delete  (Del)"
+              class="h-6 w-6 rounded text-muted dark:text-muted-dark hover:bg-down/20 hover:text-down">
+        <svg viewBox="0 0 24 24" class="mx-auto h-4 w-4" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M4 7h16M9 7V5h6v2M7 7l1 13h8l1-13" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </button>
+    </div>
+
+    <!-- Floating running-P&L orb. Shown only while trades are open; draggable. -->
+    <div id="pnl-orb"
+         class="absolute hidden cursor-grab select-none active:cursor-grabbing"
+         style="left:16px; bottom:38px;">
+      <div id="orb-ring"
+           class="grid h-[86px] w-[86px] place-items-center rounded-full border-[3px]
+                  bg-white/85 dark:bg-black/70 shadow-lg backdrop-blur-sm">
+        <div class="text-center leading-none">
+          <div id="orb-value" class="font-mono text-[17px] font-bold tabular-nums">+0.00</div>
+          <div id="orb-sub" class="mt-1 font-mono text-[9px] uppercase tracking-wide opacity-70">—</div>
+        </div>
+      </div>
+    </div>
+
+    <div id="empty" class="pointer-events-none absolute inset-0 grid place-items-center">
+      <div class="flex flex-col items-center">
+        <div class="dfx-loader">
+          <span></span><span></span><span></span>
+          <img src="/brand/DropletFX-icon-transparent.svg" alt="">
+        </div>
+        <!-- Kept separate from #empty: chart.js writes status text here, and a
+             textContent write on the parent would delete the mark above. -->
+        <div id="empty-text" class="mt-1 font-mono text-xs text-muted dark:text-muted-dark">
+          loading candles…
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <!-- ── MetaTrader 5 order panel ────────────────────────────────────── -->
+  <aside id="trade" class="flex w-[264px] shrink-0 flex-col gap-2 overflow-y-auto border-l
+                           border-edge dark:border-edge-dark bg-panel dark:bg-panel-dark p-3 text-xs">
+
+    <!-- account -->
+    <div class="flex items-center justify-between">
+      <span class="font-sans text-[13px] font-semibold text-ink dark:text-ink-dark">MetaTrader 5</span>
+      <span id="acct-mode" class="rounded px-1.5 py-0.5 text-[10px] font-bold tracking-wide">—</span>
+    </div>
+    <div id="acct-id" class="font-mono text-[11px] text-muted dark:text-muted-dark">not connected</div>
+
+    <dl class="grid grid-cols-2 gap-x-2 gap-y-1 font-mono text-[11px]">
+      <dt class="text-muted dark:text-muted-dark">Balance</dt><dd id="acct-balance" class="text-right">—</dd>
+      <dt class="text-muted dark:text-muted-dark">Equity</dt><dd id="acct-equity" class="text-right">—</dd>
+      <dt class="text-muted dark:text-muted-dark">Free margin</dt><dd id="acct-free" class="text-right">—</dd>
+      <dt class="text-muted dark:text-muted-dark">Open P&amp;L</dt><dd id="acct-pnl" class="text-right">—</dd>
+    </dl>
+
+    <div id="trade-warn" class="hidden rounded border border-amber-500/40 bg-amber-500/10
+                                px-2 py-1.5 text-[11px] leading-snug text-amber-600 dark:text-amber-400"></div>
+
+    <hr class="border-edge dark:border-edge-dark">
+
+    <!-- symbol + quote -->
+    <div>
+      <div id="mt5-symbol" class="font-sans text-[12px] font-semibold text-ink dark:text-ink-dark">—</div>
+      <div class="mt-1 flex items-baseline justify-between font-mono text-[11px]">
+        <span>bid <span id="mt5-bid" class="font-semibold" style="color:#2979ff">—</span></span>
+        <span>ask <span id="mt5-ask" class="font-semibold" style="color:#00e676">—</span></span>
+      </div>
+      <div id="mt5-spread" class="text-right font-mono text-[10px] text-muted dark:text-muted-dark"></div>
+    </div>
+
+    <!-- volume -->
+    <label class="block">
+      <span class="text-muted dark:text-muted-dark">Volume (lots)</span>
+      <div class="mt-1 flex items-stretch gap-1">
+        <button id="vol-minus" class="w-7 rounded border border-edge dark:border-edge-dark
+                                      text-muted dark:text-muted-dark hover:bg-edge dark:hover:bg-edge-dark">−</button>
+        <input id="volume" type="number" step="0.01" min="0.01" value="0.10"
+               class="min-w-0 flex-1 rounded border border-edge dark:border-edge-dark bg-white
+                      dark:bg-shell-dark px-2 py-1 text-center font-mono text-ink dark:text-ink-dark
+                      outline-none focus:border-accent">
+        <button id="vol-plus" class="w-7 rounded border border-edge dark:border-edge-dark
+                                     text-muted dark:text-muted-dark hover:bg-edge dark:hover:bg-edge-dark">+</button>
+      </div>
+      <div id="vol-hint" class="mt-0.5 font-mono text-[10px] text-muted dark:text-muted-dark"></div>
+    </label>
+
+    <!-- SL / TP -->
+    <div class="grid grid-cols-2 gap-2">
+      <label class="block">
+        <span class="text-muted dark:text-muted-dark">Stop loss</span>
+        <input id="sl" type="number" step="any" placeholder="none"
+               class="mt-1 w-full rounded border border-edge dark:border-edge-dark bg-white dark:bg-shell-dark
+                      px-2 py-1 font-mono text-ink dark:text-ink-dark outline-none focus:border-accent">
+      </label>
+      <label class="block">
+        <span class="text-muted dark:text-muted-dark">Take profit</span>
+        <input id="tp" type="number" step="any" placeholder="none"
+               class="mt-1 w-full rounded border border-edge dark:border-edge-dark bg-white dark:bg-shell-dark
+                      px-2 py-1 font-mono text-ink dark:text-ink-dark outline-none focus:border-accent">
+      </label>
+    </div>
+
+    <!-- order buttons -->
+    <div class="grid grid-cols-2 gap-2">
+      <button id="btn-sell" data-side="sell"
+              class="order-btn rounded py-2 text-center font-sans text-[13px] font-bold text-white
+                     disabled:cursor-not-allowed disabled:opacity-40" style="background:#2979ff">
+        SELL<span class="block font-mono text-[10px] font-normal opacity-90" id="sell-px">—</span>
+      </button>
+      <button id="btn-buy" data-side="buy"
+              class="order-btn rounded py-2 text-center font-sans text-[13px] font-bold text-white
+                     disabled:cursor-not-allowed disabled:opacity-40" style="background:#00a854">
+        BUY<span class="block font-mono text-[10px] font-normal opacity-90" id="buy-px">—</span>
+      </button>
+    </div>
+    <div id="order-msg" class="min-h-[2.5em] font-mono text-[10px] leading-snug"></div>
+
+    <hr class="border-edge dark:border-edge-dark">
+
+    <div class="flex items-center justify-between">
+      <span class="font-sans text-[12px] font-semibold text-ink dark:text-ink-dark">Positions</span>
+      <span id="pos-count" class="font-mono text-[10px] text-muted dark:text-muted-dark">0</span>
+    </div>
+    <div id="positions" class="flex flex-col gap-1.5"></div>
+
+    <div id="orders-block" class="hidden">
+      <div class="mt-1 flex items-center justify-between">
+        <span class="font-sans text-[12px] font-semibold text-ink dark:text-ink-dark">Pending orders</span>
+        <span id="ord-count" class="font-mono text-[10px] text-muted dark:text-muted-dark">0</span>
+      </div>
+      <div id="orders" class="mt-1.5 flex flex-col gap-1.5"></div>
+    </div>
+  </aside>
+  </div>
+
+  <!-- ── status bar ──────────────────────────────────────────────────── -->
+  <!-- overflow-hidden + truncate: without them the long hint text sets a
+       minimum width for this row and overflows the whole page horizontally. -->
+  <footer class="flex shrink-0 items-center gap-3 overflow-hidden border-t border-edge dark:border-edge-dark
+                 bg-panel dark:bg-panel-dark px-3 py-1.5 text-[11px] text-muted dark:text-muted-dark">
+    <span class="flex items-center gap-1.5">
+      <span id="dot" class="h-1.5 w-1.5 rounded-full bg-muted"></span>
+      <span id="status">connecting…</span>
+    </span>
+    <span id="mode" class="rounded border border-edge dark:border-edge-dark px-1.5 py-px font-mono"></span>
+    <span id="tz" class="rounded border border-edge dark:border-edge-dark px-1.5 py-px font-mono"></span>
+    <span id="pips" class="font-mono font-semibold"></span>
+    <span class="ml-auto min-w-0 truncate whitespace-nowrap font-mono" id="hint">drag = pan · wheel = zoom · T = trend line · Del = remove selected</span>
+  </footer>
+</div>
+
+<!-- ── new-window dialog: name the workspace before it opens ─────────────── -->
+<div id="ws-modal" class="fixed inset-0 z-50 hidden items-center justify-center bg-black/60 backdrop-blur-sm">
+  <div class="w-[22rem] rounded-xl border border-edge dark:border-edge-dark bg-panel dark:bg-panel-dark
+              p-5 shadow-2xl">
+    <h2 class="mb-1 font-sans text-[15px] font-semibold text-ink dark:text-ink-dark">New window</h2>
+    <p class="mb-4 text-xs text-muted dark:text-muted-dark">
+      Give it a name. Its drawings and settings are saved separately and restored next time.
+    </p>
+    <input id="ws-name" type="text" maxlength="40" placeholder="e.g. Gold H1"
+           class="mb-4 h-9 w-full rounded border border-edge dark:border-edge-dark bg-white dark:bg-shell-dark
+                  px-2 text-sm text-ink dark:text-ink-dark outline-none focus:border-accent">
+    <div class="flex justify-end gap-2">
+      <button id="ws-cancel"
+              class="h-9 rounded border border-edge dark:border-edge-dark px-3 text-xs font-medium
+                     text-muted dark:text-muted-dark hover:bg-edge dark:hover:bg-edge-dark">Cancel</button>
+      <button id="ws-create"
+              class="h-9 rounded bg-accent px-4 text-xs font-semibold text-white hover:opacity-90">Start</button>
+    </div>
+  </div>
+</div>
+
+<script src="/static/chart.js"></script>
+<script src="/static/trade.js"></script>
+<!-- After chart.js: live.js reads S / draw() / saveDrawings from it, and does
+     nothing at all unless the window was opened with ?live=<room>. -->
+<script src="/static/live.js"></script>
+</body>
+</html>

@@ -1,0 +1,326 @@
+<!doctype html>
+<html lang="en" class="h-full">
+<head>
+<meta charset="utf-8">
+<title>DropletFX — Open windows</title>
+<style>
+  :root {
+    --bg: #000; --panel: #0b0b0f; --edge: #1e1e24; --ink: #e6e8ef;
+    --muted: #8b8f9a; --accent: #f50512; --up: #00e676;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    background: var(--bg); color: var(--ink); display: flex; flex-direction: column;
+    font: 14px/1.45 ui-sans-serif, "Segoe UI", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased; user-select: none; overflow: hidden;
+  }
+  header {
+    display: flex; flex-direction: column; align-items: center; gap: 10px;
+    padding: 40px 36px 26px; -webkit-app-region: drag;
+    border-bottom: 1px solid var(--edge);
+    background: radial-gradient(120% 140% at 50% 0%, #14141b 0%, #000 70%);
+  }
+  /* The source SVG is 1024² with the wordmark occupying only 943×226 at
+     (40,399), so scaling the whole file leaves it tiny in a sea of padding.
+     Crop to that content box instead: scale = 300/943. */
+  .logo { position: relative; width: 300px; height: 72px; overflow: hidden; }
+  .logo img {
+    position: absolute; left: -13px; top: -127px;
+    width: 326px; max-width: none;
+  }
+  header .sub { color: var(--muted); font-size: 13px; }
+  h1 { font-size: 16px; font-weight: 600; padding: 24px 36px 4px; }
+  p.hint { color: var(--muted); font-size: 12.5px; padding: 0 36px 16px; }
+  #list { flex: 1; overflow-y: auto; padding: 0 28px; }
+  .row {
+    display: flex; align-items: center; gap: 14px; cursor: pointer;
+    padding: 15px 18px; border: 1px solid var(--edge); border-radius: 10px;
+    margin-bottom: 10px; background: var(--panel); transition: border-color .12s;
+  }
+  .row .name { font-size: 14.5px; }
+  .row:hover { border-color: #33333d; }
+  .row.on { border-color: var(--accent); }
+  .row input { accent-color: var(--accent); width: 16px; height: 16px; cursor: pointer; }
+  .row .name { font-weight: 600; }
+  .row .meta { color: var(--muted); font-size: 11px; margin-left: auto; font-family: ui-monospace, Consolas, monospace; }
+  .row .del {
+    height: 26px; padding: 0 9px; border-radius: 6px; font-size: 11px; font-weight: 600;
+    border: 1px solid var(--edge); background: transparent; color: var(--muted);
+    cursor: pointer; flex-shrink: 0;
+  }
+  .row .del:hover { border-color: var(--accent); color: var(--accent); }
+  .row .del.arm { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .empty { color: var(--muted); font-size: 13px; padding: 24px 26px; text-align: center; }
+  footer {
+    display: flex; gap: 10px; align-items: center;
+    padding: 18px 36px 24px; border-top: 1px solid var(--edge);
+  }
+  button {
+    height: 40px; padding: 0 18px; border-radius: 8px; cursor: pointer;
+    font: inherit; font-size: 12.5px; font-weight: 600;
+    border: 1px solid var(--edge); background: transparent; color: var(--muted);
+  }
+  button:hover { background: #16161c; color: var(--ink); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.primary:hover { opacity: .9; background: var(--accent); color: #fff; }
+  button:disabled { opacity: .4; cursor: default; }
+  .spacer { margin-left: auto; }
+  /* new-window inline form */
+  #newRow { display: none; gap: 10px; padding: 0 36px 16px; }
+  #newRow.show { display: flex; }
+  #newName {
+    flex: 1; height: 40px; border-radius: 8px; padding: 0 12px;
+    background: var(--panel); border: 1px solid var(--edge); color: var(--ink);
+    font: inherit; font-size: 13px; outline: none;
+  }
+  #newName:focus { border-color: var(--accent); }
+  /* live sessions */
+  #liveWrap { padding-bottom: 4px; }
+  #liveList { padding: 0 28px; }
+  .live-row {
+    display: flex; align-items: center; gap: 12px; padding: 13px 18px;
+    border: 1px solid rgba(245,5,18,.35); border-radius: 10px; margin-bottom: 10px;
+    background: linear-gradient(90deg, rgba(245,5,18,.09), var(--panel) 60%);
+  }
+  .live-row .dot {
+    width: 8px; height: 8px; border-radius: 50%; background: var(--accent); flex-shrink: 0;
+    animation: pulse 1.8s ease-in-out infinite;
+  }
+  @keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: .25 } }
+  .live-row .who { font-weight: 600; font-size: 14px; }
+  .live-row .what { color: var(--muted); font-size: 12px; }
+  .live-row .meta { margin-left: auto; color: var(--muted); font-size: 11px;
+                    font-family: ui-monospace, Consolas, monospace; }
+  .live-row button {
+    height: 30px; padding: 0 13px; border-radius: 7px; font-size: 12px; font-weight: 600;
+    background: var(--accent); border: 1px solid var(--accent); color: #fff;
+  }
+  .live-row button:hover { opacity: .9; background: var(--accent); color: #fff; }
+  #goLiveBtn { border-color: rgba(245,5,18,.5); color: var(--accent); }
+  #goLiveBtn:hover { background: rgba(245,5,18,.12); color: var(--accent); }
+  /* signed-in account, top-right of the header */
+  #account {
+    position: absolute; top: 14px; right: 18px; -webkit-app-region: no-drag;
+    display: flex; align-items: center; gap: 10px;
+    color: var(--muted); font-size: 11.5px;
+  }
+  #account .who { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #account .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--up); flex-shrink: 0; }
+  #signOut {
+    height: 26px; padding: 0 10px; border-radius: 6px; font-size: 11px; font-weight: 600;
+    border: 1px solid var(--edge); background: transparent; color: var(--muted); cursor: pointer;
+  }
+  #signOut:hover { border-color: var(--accent); color: var(--accent); background: transparent; }
+  header { position: relative; }
+</style>
+</head>
+<body>
+  <header>
+    <div id="account" hidden>
+      <span class="dot"></span>
+      <span class="who" id="who"></span>
+      <button id="signOut">Sign out</button>
+    </div>
+    <span class="logo"><img id="logo" src="../build/splash-logo.svg" alt="DropletFX"></span>
+    <span class="sub">Choose which windows to open</span>
+  </header>
+  <h1>Your windows</h1>
+  <p class="hint">Each window keeps its own drawings and settings. Pick one, several, or open them all.</p>
+
+  <div id="newRow">
+    <input id="newName" type="text" maxlength="40" placeholder="Name the new window — e.g. Gold H1">
+    <button class="primary" id="createBtn">Create</button>
+    <button id="cancelNew">Cancel</button>
+  </div>
+
+  <!-- Sessions happening right now. Hidden entirely when there are none, so an
+       ordinary launch looks exactly as it did before. -->
+  <div id="liveWrap" hidden>
+    <h1>Live now</h1>
+    <div id="liveList"></div>
+  </div>
+
+  <div id="list"></div>
+
+  <footer>
+    <button id="newBtn">+ New window</button>
+    <button id="goLiveBtn" hidden>● Go live</button>
+    <span class="spacer"></span>
+    <button id="allBtn">Launch all</button>
+    <button class="primary" id="openBtn">Launch selected</button>
+  </footer>
+
+<script>
+  const listEl = document.getElementById('list');
+  let items = [];
+
+  function render() {
+    listEl.innerHTML = '';
+    if (!items.length) {
+      listEl.innerHTML = '<div class="empty">No saved windows yet — create one below.</div>';
+      sync();
+      return;
+    }
+    for (const w of items) {
+      const row = document.createElement('label');
+      row.className = 'row' + (w.checked ? ' on' : '');
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = !!w.checked;
+      cb.onchange = () => { w.checked = cb.checked; row.classList.toggle('on', cb.checked); sync(); };
+      const name = document.createElement('span');
+      name.className = 'name';
+      name.textContent = w.name;
+      const meta = document.createElement('span');
+      meta.className = 'meta';
+      meta.textContent = w.lastSymbol || '';
+
+      // Delete arms on the first click and commits on the second, so a stray
+      // click can never destroy a window's saved drawings.
+      const del = document.createElement('button');
+      del.className = 'del';
+      del.textContent = 'Delete';
+      del.onclick = async (e) => {
+        e.preventDefault();          // the row is a <label>; don't toggle it
+        e.stopPropagation();
+        if (!del.classList.contains('arm')) {
+          document.querySelectorAll('.del.arm').forEach((b) => {
+            b.classList.remove('arm'); b.textContent = 'Delete';
+          });
+          del.classList.add('arm');
+          del.textContent = 'Sure?';
+          setTimeout(() => {
+            if (del.isConnected) { del.classList.remove('arm'); del.textContent = 'Delete'; }
+          }, 4000);
+          return;
+        }
+        items = await window.dfxLauncher.remove(w.id);
+        if (!items.some((x) => x.checked) && items.length) items[0].checked = true;
+        render();
+      };
+
+      row.append(cb, name, meta, del);
+      listEl.appendChild(row);
+    }
+    sync();
+  }
+
+  function sync() {
+    const n = items.filter((w) => w.checked).length;
+    const open = document.getElementById('openBtn');
+    open.disabled = n === 0;
+    open.textContent = n > 1 ? `Launch ${n} windows` : 'Launch selected';
+    document.getElementById('allBtn').disabled = !items.length;
+  }
+
+  document.getElementById('openBtn').onclick = () => {
+    const ids = items.filter((w) => w.checked).map((w) => w.id);
+    if (ids.length) window.dfxLauncher.launch(ids);
+  };
+  document.getElementById('allBtn').onclick = () => {
+    if (items.length) window.dfxLauncher.launch(items.map((w) => w.id));
+  };
+
+  const newRow = document.getElementById('newRow');
+  const newName = document.getElementById('newName');
+  document.getElementById('newBtn').onclick = () => {
+    newRow.classList.add('show');
+    newName.focus();
+  };
+  document.getElementById('cancelNew').onclick = () => {
+    newRow.classList.remove('show');
+    newName.value = '';
+  };
+  function create() {
+    window.dfxLauncher.create(newName.value.trim());
+  }
+  document.getElementById('createBtn').onclick = create;
+  newName.onkeydown = (e) => {
+    if (e.key === 'Enter') create();
+    else if (e.key === 'Escape') document.getElementById('cancelNew').click();
+  };
+
+  // ── live sessions ───────────────────────────────────────────────────────
+  async function loadLive() {
+    let rows = [];
+    try { rows = await window.dfxLive.list(); }
+    catch { return; }                       // offline — just don't show the strip
+    if (!Array.isArray(rows)) return;
+
+    const wrap = document.getElementById('liveWrap');
+    const list = document.getElementById('liveList');
+    wrap.hidden = rows.length === 0;
+    list.innerHTML = '';
+
+    for (const r of rows) {
+      const row = document.createElement('div');
+      row.className = 'live-row';
+
+      const dot = document.createElement('span');
+      dot.className = 'dot';
+
+      const text = document.createElement('div');
+      const who = document.createElement('div');
+      who.className = 'who';
+      who.textContent = r.trader.is_you ? 'You are live' : r.trader.name;
+      const what = document.createElement('div');
+      what.className = 'what';
+      what.textContent = [r.title, r.symbol].filter(Boolean).join(' · ') || 'Live analysis';
+      text.append(who, what);
+
+      const meta = document.createElement('span');
+      meta.className = 'meta';
+      meta.textContent = r.peak_viewers ? `${r.peak_viewers} peak` : '';
+
+      const join = document.createElement('button');
+      // Rejoining your own session must return you to the host role, or you'd
+      // be locked out of drawing on your own broadcast.
+      join.textContent = r.trader.is_you ? 'Resume' : 'Join';
+      join.onclick = () => {
+        window.dfxLive.open(r.room_key, r.trader.is_you ? 'host' : 'viewer',
+                            r.trader.is_you ? 'Live — hosting' : `Live — ${r.trader.name}`);
+      };
+
+      row.append(dot, text, meta, join);
+      list.appendChild(row);
+    }
+  }
+
+  (async () => {
+    const s = await window.dfxAuth.session();
+    if (s && s.signedIn) {
+      const u = s.user || {};
+      const name = [u.first_name, u.last_name].filter(Boolean).join(' ');
+      document.getElementById('who').textContent = name || u.email || 'Signed in';
+      document.getElementById('who').title = u.email || '';
+      document.getElementById('account').hidden = false;
+    }
+    document.getElementById('signOut').onclick = () => window.dfxAuth.signOut();
+
+    items = await window.dfxLauncher.list();
+    // Pre-select whatever was open last time; otherwise the first entry.
+    if (!items.some((w) => w.checked) && items.length) items[0].checked = true;
+    render();
+    if (!items.length) newRow.classList.add('show');
+
+    // "Go live" is only meaningful for an approved trader; the backend refuses
+    // anyone else, so ask it rather than guessing from the profile here.
+    const goLive = document.getElementById('goLiveBtn');
+    goLive.onclick = async () => {
+      goLive.disabled = true;
+      try {
+        const sess = await window.dfxLive.start({ title: '', symbol: '', granularity: 60 });
+        window.dfxLive.open(sess.room_key, 'host', 'Live — hosting');
+      } catch (e) {
+        alert((e && e.message) || 'Could not start a live session');
+        goLive.disabled = false;
+      }
+    };
+    goLive.hidden = false;
+
+    loadLive();
+  })();
+</script>
+</body>
+</html>
