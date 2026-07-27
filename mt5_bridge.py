@@ -156,6 +156,11 @@ class Mt5Bridge:
             mt5.symbol_select(name, True)
             info = mt5.symbol_info(name)
         tick = mt5.symbol_info_tick(name)
+        # Dollars gained/lost per 1.0 of price movement, per 1.0 lot — the factor
+        # the chart's order ticket multiplies by (price distance × this × volume)
+        # to show live TP profit / SL loss without a round-trip per drag frame.
+        tick_size = info.trade_tick_size or info.point
+        money_per_price = (info.trade_tick_value / tick_size) if tick_size else None
         return {
             "deriv_symbol": deriv_symbol,
             "symbol": name,
@@ -165,6 +170,10 @@ class Mt5Bridge:
             "volume_min": info.volume_min,
             "volume_max": info.volume_max,
             "volume_step": info.volume_step,
+            "tick_value": info.trade_tick_value,
+            "tick_size": tick_size,
+            "contract_size": info.trade_contract_size,
+            "money_per_price": money_per_price,
             "trade_allowed": info.trade_mode != mt5.SYMBOL_TRADE_MODE_DISABLED,
             "bid": tick.bid if tick else None,
             "ask": tick.ask if tick else None,
@@ -352,6 +361,74 @@ class Mt5Bridge:
 
     async def send_order(self, deriv_symbol, side, volume, sl=None, tp=None) -> dict:
         return await self._call(self._send_sync, deriv_symbol, side, volume, sl, tp)
+
+    def _pending_sync(self, deriv_symbol, side, volume, price, sl, tp) -> dict:
+        if not TRADE_ENABLED:
+            raise Mt5Error("order placement is disabled in mt5_bridge.TRADE_ENABLED")
+        name = SYMBOL_MAP.get(deriv_symbol)
+        if not name:
+            raise Mt5Error(f"{deriv_symbol} has no MetaTrader 5 equivalent")
+        info = mt5.symbol_info(name)
+        if info is None:
+            raise Mt5Error(f"unknown MT5 symbol {name}")
+        if not info.visible:
+            mt5.symbol_select(name, True)
+        tick = mt5.symbol_info_tick(name)
+        if tick is None:
+            raise Mt5Error(f"no quote for {name}")
+
+        volume = float(volume)
+        if volume < info.volume_min or volume > info.volume_max:
+            raise Mt5Error(
+                f"volume must be between {info.volume_min} and {info.volume_max}")
+
+        price = float(price)
+        buy = side == "buy"
+        # A buy resting below the market is a limit, above it is a stop (and the
+        # mirror for a sell).  The ticket only ever sends limits, but the market
+        # can move between the click and the send — resolve the type from where
+        # the price actually sits so the terminal never rejects it outright.
+        market = tick.ask if buy else tick.bid
+        if buy:
+            otype = mt5.ORDER_TYPE_BUY_LIMIT if price < market else mt5.ORDER_TYPE_BUY_STOP
+        else:
+            otype = mt5.ORDER_TYPE_SELL_LIMIT if price > market else mt5.ORDER_TYPE_SELL_STOP
+
+        req = {
+            "action": mt5.TRADE_ACTION_PENDING,
+            "symbol": name,
+            "volume": volume,
+            "type": otype,
+            "price": price,
+            "deviation": DEVIATION,
+            "magic": MAGIC,
+            "comment": "DropletFX pending",
+            "type_time": mt5.ORDER_TIME_GTC,
+            # Pending orders fill on trigger; RETURN is the mode brokers accept
+            # for them regardless of the symbol's market-order filling flags.
+            "type_filling": mt5.ORDER_FILLING_RETURN,
+        }
+        if sl:
+            req["sl"] = float(sl)
+        if tp:
+            req["tp"] = float(tp)
+        res = mt5.order_send(req)
+        if res is None:
+            raise Mt5Error(f"pending order failed: {mt5.last_error()}")
+        return {
+            "ok": res.retcode == mt5.TRADE_RETCODE_DONE,
+            "retcode": res.retcode,
+            "comment": res.comment,
+            "order": res.order,
+            "kind": PENDING_TYPES.get(otype, "pending"),
+            "price": price,
+        }
+
+    async def place_pending(self, deriv_symbol, side, volume, price,
+                            sl=None, tp=None) -> dict:
+        """Place a resting limit/stop order at ``price`` with optional SL/TP."""
+        return await self._call(self._pending_sync, deriv_symbol, side,
+                                volume, price, sl, tp)
 
     def _close_sync(self, ticket: int) -> dict:
         if not TRADE_ENABLED:

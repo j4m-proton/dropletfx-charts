@@ -31,6 +31,7 @@
         "from": "..",
         "to": "app",
         "filter": [
+          "dfx-server.exe",
           "server.py",
           "deriv_api.py",
           "mt5_bridge.py",

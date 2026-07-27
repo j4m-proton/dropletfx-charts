@@ -20,7 +20,38 @@
   const P = new URLSearchParams(location.search);
   const ROOM = P.get('live') || '';
   const ROLE = P.get('role') === 'host' ? 'host' : 'viewer';
-  if (!ROOM) return;                       // an ordinary chart window
+
+  // An ordinary chart window is also where a trader *starts* a broadcast from,
+  // so wire the header "Go live" button here and then bow out — nothing else in
+  // this file applies until we're actually in a live room.
+  if (!ROOM) { wireGoLive(); return; }
+
+  function wireGoLive() {
+    const btn = document.getElementById('go-live');
+    const d = window.dfxDesktop;
+    if (!btn || !d || !d.liveStart) return;   // browser preview, or no shell
+    btn.hidden = false;
+    btn.onclick = async () => {
+      btn.disabled = true;
+      const prev = btn.textContent;
+      btn.textContent = 'Starting…';
+      try {
+        const sess = await d.liveStart({
+          title: '',
+          symbol: (typeof S !== 'undefined' && S.symbol) || '',
+          granularity: (typeof S !== 'undefined' && S.granularity) || 60,
+        });
+        // Opens a dedicated host window on this room; this window stays a normal
+        // chart. The backend is idempotent, so re-clicking just reopens it.
+        d.liveOpen(sess.room_key, 'host', 'Live — hosting');
+      } catch (e) {
+        alert((e && e.message) || 'Could not start a live session');
+      } finally {
+        btn.disabled = false;
+        btn.textContent = prev;
+      }
+    };
+  }
 
   const IS_HOST = ROLE === 'host';
   const RETRY_MS = [1000, 2000, 4000, 8000, 15000];
@@ -37,6 +68,9 @@
     myPeer: null,
     session: null,
     suppress: false,         // true while applying a remote snapshot
+    lastTradeKey: null,      // host: last trade payload sent, to avoid spamming
+    autoCopyDone: false,     // viewer: the one-shot join-time copy decision
+    lastViewKey: null,       // host: last viewport sent, to avoid spamming
   };
 
   // ── UI ────────────────────────────────────────────────────────────────────
@@ -46,9 +80,16 @@
   function setBanner(text, tone) {
     const b = el('live-banner');
     if (!b) return;
-    b.hidden = false;
     el('live-text').textContent = text;
     b.dataset.tone = tone || 'live';
+    // Don't surface the banner while we're merely connecting/waiting/reconnecting
+    // ('warn'). It should appear the moment the session is actually live, and
+    // stay for the live/ended/error states — nothing before then.
+    // The banner carries the `flex` utility (display:flex), which beats the
+    // [hidden] attribute, so toggle display explicitly or it never hides.
+    const show = tone !== 'warn';
+    b.hidden = !show;
+    b.style.display = show ? 'flex' : 'none';
   }
 
   function setViewers(n) {
@@ -148,6 +189,10 @@
           startCameraIfWanted();
         } else {
           applySessionChart(msg.session);
+          applyView(msg.session.view);          // land on the host's exact view
+          // Copy the host's open trade to our local MT5 — once, at join, and
+          // only while it's still near entry.
+          maybeCopyHostTrade(msg.session.trade);
         }
         setBanner(IS_HOST ? 'You are live'
                           : `Live — ${msg.session.trader || 'trader'}`, 'live');
@@ -163,6 +208,10 @@
 
       case 'timeframe':
         if (!IS_HOST) remoteTimeframe(msg.value);
+        break;
+
+      case 'view':
+        if (!IS_HOST) applyView(msg.view);
         break;
 
       case 'viewers':
@@ -199,6 +248,105 @@
     if (!sess) return;
     if (sess.symbol && sess.symbol !== S.symbol) remoteSymbol(sess.symbol);
     if (sess.granularity && sess.granularity !== S.granularity) remoteTimeframe(sess.granularity);
+  }
+
+  // ── auto-trade on join (viewer) ─────────────────────────────────────────────
+  //
+  // The desktop tier: when you join a live session the host's open trade is
+  // pushed straight to *your* local MT5 — but only if it's still a fresh entry.
+  // If the host is already more than ±5 pips from entry you've missed it, so we
+  // skip rather than chase. This runs exactly once, at join.
+  // Don't copy a trade that's already run: 10 pips or more from entry in either
+  // direction (in profit or against) means you've missed the entry, so skip it.
+  const COPY_PIP_LIMIT = 10;
+
+  function maybeCopyHostTrade(trade) {
+    if (IS_HOST || L.autoCopyDone) return;
+    L.autoCopyDone = true;                       // one decision per join, always
+    if (!trade) return;                          // host was flat at join
+
+    const pips = Number(trade.pips) || 0;
+    if (Math.abs(pips) >= COPY_PIP_LIMIT) {
+      flash(`Host is ${pips > 0 ? '+' : ''}${pips} pips in — too far to copy, skipped`);
+      return;
+    }
+    const dfx = window.DFX;
+    if (!dfx || typeof dfx.send !== 'function') return;   // no local MT5 bridge
+    dfx.send({
+      action: 'mt5_order',
+      symbol: dfx.symbol,                        // our charted symbol (synced to host)
+      side: trade.side,
+      volume: trade.volume,
+      sl: trade.sl ?? null,
+      tp: trade.tp ?? null,
+    });
+    flash(`Copying host's trade — ${trade.side.toUpperCase()} ${trade.volume} @ ${trade.entry}`);
+  }
+
+  // ── broadcast the host's open trade ─────────────────────────────────────────
+  function broadcastTrade(list) {
+    if (!IS_HOST) return;
+    const pos = Array.isArray(list) && list.length ? list[0] : null;
+    let trade = null;
+    if (pos) {
+      const factor = Math.pow(10, (typeof S !== 'undefined' ? S.pip : 2));
+      const dist = pos.side === 'buy'
+        ? (pos.price_current - pos.price_open)
+        : (pos.price_open - pos.price_current);
+      trade = {
+        symbol: (typeof S !== 'undefined' && S.symbol) || '',
+        side: pos.side,
+        volume: pos.volume,
+        entry: pos.price_open,
+        sl: pos.sl ?? null,
+        tp: pos.tp ?? null,
+        pips: +(dist * factor).toFixed(1),
+      };
+    }
+    // Resend whenever anything changes — including pips, since a viewer reads
+    // that at join and a stale value would defeat the ±5-pip gate. pips is
+    // rounded to 0.1, so this settles to about one small message per MT5 poll.
+    const key = JSON.stringify(trade);         // 'null' when the host is flat
+    if (key === L.lastTradeKey) return;
+    L.lastTradeKey = key;
+    send({ op: 'trade', trade });
+  }
+
+  // ── viewport mirroring ──────────────────────────────────────────────────────
+  //
+  // The host's pan/zoom/scroll is the viewer's too: they see exactly the same
+  // window. We anchor the right edge to an epoch (not a bar index) so it lines
+  // up even when the two charts have loaded a different number of candles.
+  let viewTimer = null;
+
+  function broadcastView() {
+    if (!IS_HOST) return;
+    clearTimeout(viewTimer);
+    viewTimer = setTimeout(() => {
+      if (typeof S === 'undefined' || !S.epochs || !S.epochs.length) return;
+      const view = {
+        rightEpoch: Math.round(epochFromIndex(S.viewRight)),
+        bars: S.bars,
+        priceZoom: S.priceZoom,
+        priceShift: S.priceShift,
+      };
+      const key = JSON.stringify(view);
+      if (key === L.lastViewKey) return;
+      L.lastViewKey = key;
+      send({ op: 'view', view });
+    }, 120);        // coalesce a drag into one message
+  }
+
+  function applyView(view) {
+    if (IS_HOST || !view || typeof S === 'undefined') return;
+    if (view.rightEpoch != null && S.epochs && S.epochs.length) {
+      S.viewRight = indexFromEpoch(view.rightEpoch);
+    }
+    if (view.bars) S.bars = view.bars;
+    if (view.priceZoom) S.priceZoom = view.priceZoom;
+    if (view.priceShift != null) S.priceShift = view.priceShift;
+    if (typeof clampView === 'function') clampView();
+    if (typeof draw === 'function') draw();
   }
 
   function applySnapshot(msg) {
@@ -395,6 +543,80 @@
     if (box) box.hidden = true;
   }
 
+  // Drag the camera anywhere by its frame (host self-view and viewer alike),
+  // clamped to the chart area. The first drag swaps the Tailwind right/top anchor
+  // for explicit left/top so it moves freely.
+  function makeCamDraggable() {
+    const cam = el('live-cam');
+    const frame = el('live-cam-frame');
+    if (!cam || !frame) return;
+    let dragging = false, sx = 0, sy = 0, ox = 0, oy = 0;
+    const bounds = () => (cam.offsetParent || document.body).getBoundingClientRect();
+
+    frame.addEventListener('pointerdown', (e) => {
+      if (e.target.closest('#live-cam-full')) return;    // let the button work
+      if (document.fullscreenElement) return;            // no dragging while full
+      dragging = true;
+      cam.classList.add('dragging');
+      const r = cam.getBoundingClientRect(), p = bounds();
+      ox = r.left - p.left; oy = r.top - p.top;
+      cam.style.left = ox + 'px';
+      cam.style.top = oy + 'px';
+      cam.style.right = 'auto';
+      sx = e.clientX; sy = e.clientY;
+      try { frame.setPointerCapture(e.pointerId); } catch { /* older */ }
+      e.preventDefault();
+    });
+    frame.addEventListener('pointermove', (e) => {
+      if (!dragging) return;
+      const p = bounds();
+      const nx = Math.max(0, Math.min(ox + (e.clientX - sx), p.width - cam.offsetWidth));
+      const ny = Math.max(0, Math.min(oy + (e.clientY - sy), p.height - cam.offsetHeight));
+      cam.style.left = nx + 'px';
+      cam.style.top = ny + 'px';
+    });
+    const stop = (e) => {
+      if (!dragging) return;
+      dragging = false;
+      cam.classList.remove('dragging');
+      try { frame.releasePointerCapture(e.pointerId); } catch { /* fine */ }
+    };
+    frame.addEventListener('pointerup', stop);
+    frame.addEventListener('pointercancel', stop);
+  }
+
+  function wireCamFullscreen() {
+    const frame = el('live-cam-frame');
+    const cam = el('live-cam');
+    const video = el('live-video');
+    const btn = el('live-cam-full');
+    if (!frame || !cam) return;
+
+    // The button uses a CSS maximise that fills the whole window — it always
+    // works, unlike the fullscreen API which the shell can refuse.
+    function toggleMax() {
+      if (document.fullscreenElement) { document.exitFullscreen().catch(() => {}); return; }
+      cam.classList.toggle('cam-max');
+    }
+
+    // Double-click reaches for true monitor fullscreen, and quietly degrades to
+    // the same CSS maximise if the API is unavailable.
+    async function toggleNative() {
+      if (document.fullscreenElement) { try { await document.exitFullscreen(); } catch { /* ok */ } return; }
+      if (cam.classList.contains('cam-max')) { cam.classList.remove('cam-max'); }
+      const target = frame.requestFullscreen ? frame
+                   : (video && video.requestFullscreen ? video : null);
+      if (target) { try { await target.requestFullscreen(); return; } catch { /* blocked */ } }
+      cam.classList.add('cam-max');
+    }
+
+    if (btn) btn.onclick = (e) => { e.preventDefault(); e.stopPropagation(); toggleMax(); };
+    frame.addEventListener('dblclick', (e) => { e.preventDefault(); toggleNative(); });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && cam.classList.contains('cam-max')) cam.classList.remove('cam-max');
+    });
+  }
+
   // ── ending ────────────────────────────────────────────────────────────────
 
   function endLocally(reason) {
@@ -446,6 +668,9 @@
       leave.onclick = () => endLocally('You left the session');
     }
 
+    makeCamDraggable();
+    // Fullscreen is disabled for now (kept in wireCamFullscreen for later).
+
     window.addEventListener('pagehide', () => { try { if (L.ws) L.ws.close(); } catch {} });
     connect();
   }
@@ -466,6 +691,10 @@
       pushSnapshot();
     },
     onTimeframe(g) { if (IS_HOST) send({ op: 'timeframe', value: g }); },
+    /** trade.js hands us the host's open positions on the charted symbol. */
+    onPositions(list) { broadcastTrade(list); },
+    /** chart.js calls this from clampView() on every pan/zoom/scroll. */
+    onView() { broadcastView(); },
     readOnly() { return !IS_HOST && !L.ended; },
   };
 

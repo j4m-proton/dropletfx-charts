@@ -12,7 +12,14 @@ desktop/node_modules/
 
 # Electron build output (installers, packed app)
 desktop/release/
+desktop/release-fresh/
+desktop/installer-build*/
 desktop/dist/
+
+# Frozen Python server (PyInstaller) + its build dirs
+dfx-server.exe
+server-dist/
+server-build/
 
 # Runtime config that may hold secrets (Google client secret, tokens)
 config.json

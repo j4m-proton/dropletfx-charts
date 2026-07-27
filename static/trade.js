@@ -78,6 +78,7 @@ function renderSymbol(s) {
     T('mt5-bid').textContent = T('mt5-ask').textContent = '—';
     T('mt5-spread').textContent = '';
     T('vol-hint').textContent = '';
+    window.DFX.setTradeMeta(null);
     updateButtons();
     return;
   }
@@ -94,6 +95,13 @@ function renderSymbol(s) {
   vol.max = s.volume_max;
   vol.step = s.volume_step;
   if (+vol.value < s.volume_min) vol.value = s.volume_min;
+
+  // Feed the chart's order ticket the facts it needs to size lots and price
+  // TP/SL profit & loss in dollars.
+  window.DFX.setTradeMeta({
+    volume_min: s.volume_min, volume_step: s.volume_step, volume_max: s.volume_max,
+    digits: s.digits, moneyPerPrice: s.money_per_price,
+  });
   updateButtons();
 }
 
@@ -179,6 +187,13 @@ function renderPositions(list) {
     ? P.positions.filter((p) => p.symbol === P.symbol.symbol)
     : [];
   window.DFX.setPositions(mine);
+
+  // If we're hosting a live session, broadcast our open trade on the charted
+  // symbol so joining viewers can copy it (the desktop tier). live.js decides
+  // what to send and rate-limits it.
+  if (window.LIVE && window.LIVE.isHost && typeof window.LIVE.onPositions === 'function') {
+    window.LIVE.onPositions(mine);
+  }
 
   T('pos-count').textContent = String(P.positions.length);
   renderOrb();
@@ -403,6 +418,14 @@ window.DFX.onMessage = (m) => {
               r.ok ? 'good' : 'bad');
       // A rejected drag must snap back to what the terminal actually holds.
       if (!r.ok) window.DFX.clearOptimistic();
+      break;
+    }
+
+    case 'mt5_pending': {
+      const r = m.result;
+      message(r.ok ? `${r.kind || 'pending'} placed${r.order ? ` · order ${r.order}` : ''}`
+                   : `pending failed: ${r.comment} (${r.retcode})`,
+              r.ok ? 'good' : 'bad');
       break;
     }
 

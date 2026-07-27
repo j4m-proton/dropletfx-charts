@@ -23,4 +23,11 @@ contextBridge.exposeInMainWorld('dfxDesktop', {
   liveList: () => ipcRenderer.invoke('live-list'),
   liveEnd: (room) => ipcRenderer.invoke('live-end', room),
   liveOpen: (room, role, title) => ipcRenderer.send('live-open', room, role, title),
+
+  // ── price alerts ─────────────────────────────────────────────────────────
+  // REST goes through main (token refresh lives there); the trigger push comes
+  // over the dashboard WebSocket, which the page opens itself with liveToken().
+  alertsList: () => ipcRenderer.invoke('alerts-list'),
+  alertsCreate: (payload) => ipcRenderer.invoke('alerts-create', payload),
+  alertsDelete: (id) => ipcRenderer.invoke('alerts-delete', id),
 });

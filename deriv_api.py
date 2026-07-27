@@ -74,12 +74,20 @@ class DerivClient:
     # Deriv caps a single request at 5000 candles.
     MAX_COUNT = 5000
 
+    # ``ticks_history`` sits on its own throttle bucket, separate from the
+    # general per-minute budget, so a fixed 1s poll eventually trips it. Poll
+    # mode therefore uses an adaptive interval: it runs at ``poll_floor`` when
+    # all is well, doubles toward ``POLL_CEILING`` each time the server answers
+    # RateLimit, then decays back toward the floor as clean polls come in.
+    POLL_CEILING = 15.0
+
     def __init__(self, out: asyncio.Queue, app_id: str = DEFAULT_APP_ID,
-                 count: int = MAX_COUNT, poll_interval: float = 2.0):
+                 count: int = MAX_COUNT, poll_interval: float = 1.0):
         self.out = out
         self.url = f"{ENDPOINT}?app_id={app_id}"
         self.count = min(count, self.MAX_COUNT)
-        self.poll_interval = poll_interval
+        self._poll_floor = poll_interval
+        self.poll_interval = poll_interval     # current effective interval
 
         self._symbol: str | None = None
         self._granularity = 60
@@ -244,6 +252,7 @@ class DerivClient:
             initial = kind != "poll"
             if initial:
                 self._loaded = True
+            self._poll_recovered()          # a clean fetch: ease back toward 1s
             await self._emit(type="candles", symbol=self._symbol,
                              granularity=self._granularity, candles=candles,
                              pip_size=msg.get("pip_size", 2), initial=initial,
@@ -278,9 +287,23 @@ class DerivClient:
             if not stale:
                 await self._request_history(ws, subscribe=False)
             return
+        # Deriv rate-limits ticks_history on its own bucket. It isn't a real
+        # failure — the chart keeps its last candles — so don't surface it as an
+        # error banner. Back the poll timer off and the next tick just retries.
+        if code == "RateLimit":
+            self.poll_interval = min(self.poll_interval * 2, self.POLL_CEILING)
+            await self._emit(
+                type="status", mode="poll",
+                text=f"rate limited - easing updates to {self.poll_interval:g}s")
+            return
         if stale:
             return
         await self._emit(type="error", text=f"{code}: {text}" if code else text)
+
+    def _poll_recovered(self):
+        """A clean fetch came back; decay the poll interval toward the floor."""
+        if self.poll_interval > self._poll_floor:
+            self.poll_interval = max(self._poll_floor, self.poll_interval * 0.8)
 
     # ------------------------------------------------------------------ util
 

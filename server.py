@@ -18,6 +18,7 @@ import threading
 
 import uvicorn
 from starlette.applications import Starlette
+from starlette.middleware import Middleware
 from starlette.responses import FileResponse, JSONResponse
 from starlette.routing import Route, WebSocketRoute
 from starlette.staticfiles import StaticFiles
@@ -30,7 +31,13 @@ from mt5_bridge import Mt5Bridge, Mt5Error
 # One terminal, so one bridge shared by every browser connection.
 bridge = Mt5Bridge()
 
-ROOT = pathlib.Path(__file__).parent
+# Frozen (PyInstaller onefile) unpacks the code to a temp dir, so __file__ is
+# useless for finding our assets — they ship next to the .exe instead. In dev
+# they sit next to this script.
+if getattr(sys, "frozen", False):
+    ROOT = pathlib.Path(sys.executable).parent
+else:
+    ROOT = pathlib.Path(__file__).parent
 STATIC = ROOT / "static"
 BRAND = ROOT / "brand"
 
@@ -210,6 +217,11 @@ async def feed(websocket: WebSocket):
                     msg["symbol"], msg["side"], msg["volume"],
                     msg.get("sl"), msg.get("tp"))
                 await events.put({"type": "mt5_order", "result": res})
+            elif action == "mt5_pending":
+                res = await bridge.place_pending(
+                    msg["symbol"], msg["side"], msg["volume"], msg["price"],
+                    msg.get("sl"), msg.get("tp"))
+                await events.put({"type": "mt5_pending", "result": res})
             elif action == "mt5_close":
                 res = await bridge.close_position(msg["ticket"])
                 await events.put({"type": "mt5_order", "result": res})
@@ -254,6 +266,43 @@ async def feed(websocket: WebSocket):
                 await task
 
 
+class NoStoreMiddleware:
+    """Serve every asset fresh — never let the desktop shell cache the page.
+
+    Electron/Chromium persists an HTTP cache in the app's user-data dir. Static
+    files here carry an ETag / Last-Modified but no Cache-Control, so Chromium is
+    free to reuse a stale copy (heuristic freshness) and would keep showing an old
+    index.html across restarts even after the file on disk changed. For a local
+    single-user server the whole cache is pure downside, so we:
+      - strip the browser's conditional-request headers, forcing a full 200 every
+        time (a previously-cached ETag can't win a 304), and
+      - drop the validators on the way out and stamp `no-store`, so nothing new
+        gets cached either.
+    """
+    _DROP_REQ = (b"if-none-match", b"if-modified-since")
+    _DROP_RESP = (b"cache-control", b"etag", b"last-modified", b"expires")
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        scope = dict(scope)
+        scope["headers"] = [(k, v) for (k, v) in scope["headers"]
+                            if k.lower() not in self._DROP_REQ]
+
+        async def send_no_store(message):
+            if message["type"] == "http.response.start":
+                headers = [(k, v) for (k, v) in message.get("headers", [])
+                           if k.lower() not in self._DROP_RESP]
+                headers.append((b"cache-control", b"no-store, max-age=0"))
+                message = {**message, "headers": headers}
+            await send(message)
+
+        await self.app(scope, receive, send_no_store)
+
+
 app = Starlette(routes=[
     Route("/", index),
     Route("/api/config", config),
@@ -262,7 +311,7 @@ app = Starlette(routes=[
     Route("/api/settings", get_settings, methods=["GET"]),
     Route("/api/settings", put_settings, methods=["POST"]),
     WebSocketRoute("/ws", feed),
-    ], on_startup=[])
+    ], middleware=[Middleware(NoStoreMiddleware)], on_startup=[])
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 app.mount("/brand", StaticFiles(directory=BRAND), name="brand")
 

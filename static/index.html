@@ -56,6 +56,32 @@ tailwind.config = {
     .dfx-loader span { animation-duration: 6s; }
   }
 
+  /* Order-ticket "Place" button: a spinning, pulsing aura ring behind a solid
+     fill.  --aura is set from JS to the side colour (green buy / blue sell) so
+     the glow matches what will be placed.  The pseudo-elements sit at z-index
+     -1; the button is position:relative WITHOUT its own z-index, so they render
+     behind the whole button box rather than only behind its label. */
+  #order-place { --aura: #00e676; background: var(--aura); transition: filter .12s; }
+  #order-place::before {
+    content: ""; position: absolute; inset: -3px; z-index: -1; border-radius: 11px;
+    background: conic-gradient(from 0deg,
+      var(--aura), #ffffff, var(--aura), #ffffff, var(--aura));
+    filter: blur(6px); opacity: .8;
+    animation: orderAuraSpin 3s linear infinite;
+  }
+  #order-place::after {
+    content: ""; position: absolute; inset: -1px; z-index: -1; border-radius: 9px;
+    box-shadow: 0 0 16px 2px var(--aura);
+    animation: orderAuraPulse 1.7s ease-in-out infinite;
+  }
+  #order-place:hover { filter: brightness(1.08); }
+  #order-place:active { transform: translateY(1px); }
+  @keyframes orderAuraSpin { to { transform: rotate(1turn); } }
+  @keyframes orderAuraPulse { 0%,100% { opacity: .5; } 50% { opacity: 1; } }
+  @media (prefers-reduced-motion: reduce) {
+    #order-place::before, #order-place::after { animation: none; }
+  }
+
   /* In the desktop shell the native window controls (minimise / maximise /
      close) are painted as an overlay across the top-right of the page, which
      would sit on top of the last toolbar buttons.  Reserve that strip so the
@@ -67,13 +93,95 @@ tailwind.config = {
      of looking like a broken build — they come back when the session ends. */
   body.live-readonly #tools,
   body.live-readonly #clear { opacity: .38; pointer-events: none; }
-  body.live-readonly #chart { cursor: grab; }
+  /* Symbol and timeframe follow the host too, so a viewer can't change them —
+     dimmed but still readable, and still settable programmatically by live.js. */
+  body.live-readonly #symbol,
+  body.live-readonly #timeframes { opacity: .55; pointer-events: none; }
+  /* The viewer no longer pans/zooms (they mirror the host), so drop the grab. */
+  body.live-readonly #chart { cursor: default; }
   /* Pulse the live dot so a glance tells you the session is still connected. */
   #live-banner[data-tone="live"] #live-dot { animation: livePulse 1.8s ease-in-out infinite; }
   #live-banner[data-tone="warn"] #live-dot { background: #f59e0b; }
   #live-banner[data-tone="ended"] #live-dot,
   #live-banner[data-tone="error"] #live-dot { background: #6b7280; animation: none; }
   @keyframes livePulse { 0%,100% { opacity: 1 } 50% { opacity: .25 } }
+
+  /* ── live camera: draggable, fullscreen-able, wrapped in an animated smoke
+     aura ("bobos") of coloured blobs swirling behind the video. ───────────── */
+  #live-cam-frame { cursor: grab; }
+  #live-cam.dragging, #live-cam.dragging #live-cam-frame { cursor: grabbing; }
+  #live-cam:hover #live-cam-bar { opacity: 1; }
+
+  /* The smoke: four coloured radial blobs, blurred and slowly rotating +
+     breathing, sitting behind the frame. */
+  #live-cam-aura {
+    position: absolute; inset: -60px; z-index: -1; border-radius: 50%;
+    pointer-events: none;
+    background:
+      radial-gradient(30% 42% at 16% 18%, rgba(245,5,18,.95), transparent 70%),
+      radial-gradient(34% 46% at 84% 20%, rgba(124,58,237,.90), transparent 70%),
+      radial-gradient(38% 50% at 22% 84%, rgba(6,182,212,.90), transparent 70%),
+      radial-gradient(36% 48% at 80% 84%, rgba(245,158,11,.90), transparent 70%),
+      radial-gradient(30% 40% at 52% 50%, rgba(236,72,153,.80), transparent 66%),
+      radial-gradient(26% 36% at 60% 12%, rgba(34,197,94,.70), transparent 66%);
+    filter: blur(46px) saturate(1.5);
+    animation: auraSpin 14s linear infinite, auraBreathe 3.8s ease-in-out infinite;
+  }
+  /* A second, counter-rotating smoke layer makes it read as billowing smoke
+     rather than a single spinning ring. */
+  #live-cam-aura::before {
+    content: ""; position: absolute; inset: -12%; border-radius: inherit;
+    background:
+      radial-gradient(32% 42% at 30% 72%, rgba(245,5,18,.7), transparent 72%),
+      radial-gradient(34% 44% at 72% 38%, rgba(6,182,212,.7), transparent 72%),
+      radial-gradient(30% 40% at 50% 92%, rgba(124,58,237,.7), transparent 72%),
+      radial-gradient(28% 38% at 18% 40%, rgba(245,158,11,.6), transparent 72%);
+    filter: blur(38px);
+    animation: auraSpinRev 20s linear infinite;
+  }
+  @keyframes auraSpin { to { transform: rotate(360deg); } }
+  @keyframes auraSpinRev { to { transform: rotate(-360deg); } }
+  @keyframes auraBreathe {
+    0%,100% { opacity: .78; filter: blur(42px) saturate(1.4); }
+    50%     { opacity: 1;   filter: blur(56px) saturate(1.75); }
+  }
+  /* A thin neon ring hugging the frame edge, hue-cycling. */
+  #live-cam-frame::after {
+    content: ""; position: absolute; inset: 0; border-radius: inherit;
+    pointer-events: none; padding: 1.5px;
+    background: conic-gradient(from 0deg, #f50512, #f59e0b, #06b6d4, #7c3aed, #f50512);
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+            mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor; mask-composite: exclude;
+    animation: ringHue 5s linear infinite;
+  }
+  @keyframes ringHue { to { filter: hue-rotate(360deg); } }
+
+  /* Fullscreen (native API): frame fills the display, video letterboxed. */
+  #live-cam-frame:fullscreen { border-radius: 0; width: 100vw; height: 100vh; background: #000; }
+  #live-cam-frame:fullscreen video { width: 100%; height: 100%; max-height: 100vh; object-fit: contain; }
+  #live-cam-frame:fullscreen::after { display: none; }
+
+  /* Maximise fallback: if the fullscreen API is unavailable/blocked, fill the
+     whole app window instead. Guaranteed to visibly enlarge the video. */
+  /* !important longhands so this beats the inline left/top the drag handler
+     writes — otherwise a camera that's been moved won't fill on maximise. */
+  #live-cam.cam-max {
+    position: fixed !important; z-index: 9999;
+    left: 0 !important; top: 0 !important; right: 0 !important; bottom: 0 !important;
+    width: auto !important; height: auto !important;
+  }
+  #live-cam.cam-max #live-cam-frame {
+    width: 100%; height: 100%; border-radius: 0; background: #000;
+  }
+  #live-cam.cam-max #live-cam-frame video {
+    width: 100%; height: 100%; object-fit: contain;
+  }
+  #live-cam.cam-max #live-cam-aura, #live-cam.cam-max #live-cam-frame::after { display: none; }
+
+  @media (prefers-reduced-motion: reduce) {
+    #live-cam-aura, #live-cam-frame::after { animation: none; }
+  }
 </style>
 </head>
 
@@ -160,6 +268,14 @@ tailwind.config = {
                 stroke-linecap="round" stroke-linejoin="round"/>
         </svg>
       </button>
+      <button data-tool="order" title="Order ticket — click to place a pending order with TP / SL  (O)"
+              class="tool h-8 w-8 rounded text-muted dark:text-muted-dark hover:bg-edge dark:hover:bg-edge-dark">
+        <svg viewBox="0 0 24 24" class="mx-auto h-4 w-4" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M3 8h18M3 16h18" stroke-linecap="round"/>
+          <path d="M3 12h6m6 0h6" stroke-linecap="round" stroke-dasharray="2 2.5"/>
+          <circle cx="12" cy="12" r="2.4" fill="currentColor" stroke="none"/>
+        </svg>
+      </button>
       <button id="magnet" title="Magnet — snap to OHLC  (M)"
               class="h-8 w-8 rounded text-muted dark:text-muted-dark hover:bg-edge dark:hover:bg-edge-dark">
         <svg viewBox="0 0 24 24" class="mx-auto h-4 w-4" fill="none" stroke="currentColor" stroke-width="2">
@@ -202,6 +318,11 @@ tailwind.config = {
           <path d="M21 13A9 9 0 1111 3a7 7 0 0010 10z" stroke-linejoin="round"/>
         </svg>
       </button>
+      <!-- Only an approved trader can broadcast; live.js reveals this in the
+           desktop shell and the backend refuses anyone else. -->
+      <button id="go-live" hidden title="Go live — broadcast this chart to your viewers"
+              class="h-8 rounded border border-accent px-2.5 text-xs font-semibold
+                     text-accent hover:bg-accent hover:text-white">● Go live</button>
       <button id="save" title="Save the chart as a PNG"
               class="h-8 rounded border border-edge dark:border-edge-dark px-2 text-xs font-medium
                      text-muted dark:text-muted-dark hover:bg-edge dark:hover:bg-edge-dark">Save</button>
@@ -220,8 +341,12 @@ tailwind.config = {
 
     <!-- ── live session bar ─────────────────────────────────────────────
          Only ever shown in a window opened with ?live=<room>. -->
+    <!-- No `flex` in the static class list on purpose: `flex` (display:flex) beats
+         the [hidden] attribute, which would leak this banner (and its default
+         "Connecting…" text) into every ordinary chart window. live.js sets
+         display:flex only when the session is actually live. -->
     <div id="live-banner" hidden
-         class="absolute left-1/2 top-3 z-20 flex -translate-x-1/2 items-center gap-3
+         class="absolute left-1/2 top-28 z-20 -translate-x-1/2 items-center gap-3
                 rounded-full border px-3.5 py-1.5 text-xs shadow-lg backdrop-blur
                 border-edge dark:border-edge-dark bg-panel/95 dark:bg-panel-dark/95">
       <span id="live-dot" class="h-2 w-2 flex-shrink-0 rounded-full bg-accent"></span>
@@ -237,16 +362,67 @@ tailwind.config = {
                      hover:bg-edge dark:hover:bg-edge-dark">Leave</button>
     </div>
 
-    <!-- host's camera, draggable out of the way -->
-    <div id="live-cam" hidden
-         class="absolute right-4 top-16 z-20 w-52 overflow-hidden rounded-xl border shadow-2xl
-                border-edge dark:border-edge-dark bg-black">
-      <video id="live-video" autoplay playsinline class="block h-auto w-full"></video>
+    <!-- Host's camera. Draggable anywhere by the frame, double-click or the ⤢
+         button for fullscreen, wrapped in an animated smoke aura. Shown to the
+         host (self-view) and to every viewer (the host's stream). -->
+    <div id="live-cam" hidden class="absolute right-4 top-16 z-30 w-56 select-none">
+      <div id="live-cam-aura"></div>
+      <div id="live-cam-frame" title="Drag to move"
+           class="relative overflow-hidden rounded-2xl bg-black shadow-2xl">
+        <video id="live-video" autoplay playsinline class="block h-auto w-full"></video>
+        <div id="live-cam-bar"
+             class="pointer-events-none absolute inset-x-0 top-0 flex items-center justify-between
+                    p-1.5 opacity-0 transition-opacity duration-150">
+          <span class="rounded bg-black/55 px-1.5 py-0.5 text-[10px] font-bold tracking-wide text-white/90">● LIVE</span>
+          <button id="live-cam-full" hidden title="Fullscreen"
+                  class="pointer-events-auto grid h-6 w-6 place-items-center rounded bg-black/55
+                         text-white/90 hover:bg-black/75">
+            <svg viewBox="0 0 24 24" class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M8 3H5a2 2 0 00-2 2v3m18 0V5a2 2 0 00-2-2h-3M3 16v3a2 2 0 002 2h3m13-5v3a2 2 0 01-2 2h-3"
+                    stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </button>
+        </div>
+      </div>
     </div>
 
     <div id="live-toast" hidden
          class="absolute bottom-24 left-1/2 z-20 -translate-x-1/2 rounded-lg px-3 py-2 text-xs
                 text-white shadow-lg" style="background: rgba(0,0,0,.82)"></div>
+
+    <!-- order ticket bar — appears just above the zoom controls while a pending
+         order is being placed on the chart (the "order" tool). -->
+    <div id="order-bar" hidden
+         class="absolute bottom-20 left-1/2 z-20 -translate-x-1/2 items-center gap-2.5
+                rounded-xl border border-edge dark:border-edge-dark bg-panel/95 dark:bg-panel-dark/95
+                px-2.5 py-1.5 text-xs shadow-2xl backdrop-blur">
+      <span id="order-side" class="rounded-md px-2 py-1 font-bold tracking-wide text-white">BUY LIMIT</span>
+
+      <div class="flex items-center gap-1">
+        <span class="text-muted dark:text-muted-dark">Lots</span>
+        <button id="order-lot-minus" title="Smaller lot"
+                class="h-7 w-7 rounded bg-edge dark:bg-edge-dark font-bold text-ink dark:text-ink-dark hover:opacity-80">−</button>
+        <input id="order-lot" type="number" step="any" inputmode="decimal"
+               class="h-7 w-16 rounded border border-edge dark:border-edge-dark bg-white dark:bg-shell-dark
+                      px-1.5 text-center font-mono text-ink dark:text-ink-dark outline-none focus:border-accent">
+        <button id="order-lot-plus" title="Bigger lot"
+                class="h-7 w-7 rounded bg-edge dark:bg-edge-dark font-bold text-ink dark:text-ink-dark hover:opacity-80">+</button>
+      </div>
+
+      <div class="hidden h-6 w-px bg-edge dark:bg-edge-dark sm:block"></div>
+      <div id="order-rr" class="font-mono text-[11px] leading-tight text-muted dark:text-muted-dark"></div>
+
+      <button id="order-place"
+              class="order-aura relative h-8 rounded-lg px-3.5 font-sans text-xs font-bold text-white">
+        Place order
+      </button>
+      <button id="order-cancel" title="Discard this order  (Esc)"
+              class="h-8 w-8 rounded text-muted dark:text-muted-dark hover:bg-edge dark:hover:bg-edge-dark">
+        <svg viewBox="0 0 24 24" class="mx-auto h-4 w-4" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M6 6l12 12M18 6L6 18" stroke-linecap="round"/>
+        </svg>
+      </button>
+    </div>
 
     <!-- zoom controls — floating at the bottom centre of the chart -->
     <div class="absolute bottom-9 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1
@@ -296,6 +472,16 @@ tailwind.config = {
       <button data-style="dotted" title="Dotted"
               class="stylebtn h-6 rounded px-2 text-muted dark:text-muted-dark hover:bg-edge dark:hover:bg-edge-dark">
         <svg viewBox="0 0 24 8" class="h-2 w-6"><line x1="1" y1="4" x2="23" y2="4" stroke="currentColor" stroke-width="2" stroke-dasharray="2 3"/></svg>
+      </button>
+      <!-- Alert: only meaningful on a horizontal line (a price level). chart.js
+           shows/hides it based on the selected drawing's type. -->
+      <button id="style-alert" title="Alert on this line" hidden
+              class="h-6 rounded px-1.5 text-muted dark:text-muted-dark hover:bg-accent/20 hover:text-accent items-center gap-1">
+        <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M6 9a6 6 0 0112 0c0 5 2 6 2 6H4s2-1 2-6z" stroke-linejoin="round"/>
+          <path d="M10.5 20a1.8 1.8 0 003 0" stroke-linecap="round"/>
+        </svg>
+        <span id="style-alert-label" class="text-[11px] font-semibold">Alert</span>
       </button>
       <div class="h-5 w-px bg-edge dark:bg-edge-dark"></div>
       <button id="style-delete" title="Delete  (Del)"
@@ -475,5 +661,8 @@ tailwind.config = {
 <!-- After chart.js: live.js reads S / draw() / saveDrawings from it, and does
      nothing at all unless the window was opened with ?live=<room>. -->
 <script src="/static/live.js"></script>
+<!-- Price alerts: syncs to the backend and rings on trigger. No-op unless the
+     signed-in desktop shell (window.dfxDesktop) is present. -->
+<script src="/static/alerts.js"></script>
 </body>
 </html>

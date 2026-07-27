@@ -118,14 +118,25 @@ function waitForPort(port, timeoutMs) {
 }
 
 async function startServer() {
-  const py = findPython();
-  if (!py) throw new Error('No Python interpreter found. Install Python 3, or set DFX_PYTHON.');
-
   serverPort = await freePort();
-  const args = [...py.prefix, 'server.py'];
-  log('spawn', py.exe, args.join(' '), 'in', APP_DIR, 'port', serverPort);
 
-  serverProc = spawn(py.exe, args, {
+  // A shipped build carries a self-contained server.exe (Python + deps frozen
+  // in), so an installed app needs nothing on the machine. In development we run
+  // the .py directly so edits take effect without re-freezing.
+  const frozen = path.join(APP_DIR, 'dfx-server.exe');
+  let cmd, args;
+  if (app.isPackaged && fs.existsSync(frozen)) {
+    cmd = frozen;
+    args = [];
+  } else {
+    const py = findPython();
+    if (!py) throw new Error('No Python interpreter found. Install Python 3, or set DFX_PYTHON.');
+    cmd = py.exe;
+    args = [...py.prefix, 'server.py'];
+  }
+  log('spawn', cmd, args.join(' '), 'in', APP_DIR, 'port', serverPort);
+
+  serverProc = spawn(cmd, args, {
     cwd: APP_DIR,
     // DFX_MANAGED arms the server's stdin watchdog, so it exits with us even
     // if this process is force-killed and never runs its quit handlers.
@@ -583,6 +594,15 @@ ipcMain.handle('live-list', () => liveApi('/api/live/'));
 
 ipcMain.handle('live-end', (_e, room) =>
   liveApi(`/api/live/${encodeURIComponent(room)}/`, { method: 'DELETE' }));
+
+// ── price alerts (same authenticated pass-through as live) ──────────────────
+ipcMain.handle('alerts-list', () => liveApi('/api/alerts/'));
+
+ipcMain.handle('alerts-create', (_e, payload) =>
+  liveApi('/api/alerts/', { method: 'POST', body: JSON.stringify(payload || {}) }));
+
+ipcMain.handle('alerts-delete', (_e, id) =>
+  liveApi(`/api/alerts/${encodeURIComponent(id)}/`, { method: 'DELETE' }));
 
 /** Startup: splash while the server boots, then login or the launcher. */
 async function boot() {

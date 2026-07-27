@@ -51,6 +51,8 @@ const MIN_BARS = 15, MAX_BARS = 1200, DEFAULT_BARS = 120;
 const FIT_ALL_BELOW = 400;  // series shorter than this open fully zoomed out
 const HIT = 6;              // px tolerance for grabbing a drawing
 const HANDLE = 4;           // half-size of an endpoint handle
+const TICKET_TP_PIPS = 100; // default take-profit distance for a new order ticket
+const TICKET_SL_PIPS = 50;  // default stop-loss distance
 
 // East Africa Time has no DST, so a fixed offset is exact — shift the epoch and
 // read it back with the UTC getters.  All displayed times are Nairobi time.
@@ -75,6 +77,12 @@ const S = {
   readOnly: false,
   backfilling: false, exhausted: false, positions: [], orders: [],
   avoid: null,               // screen rect that level badges must not sit under
+  // Draft pending-order ticket placed with the "order" tool: an entry price
+  // plus TP/SL held as pip distances (so dragging entry carries them along and
+  // the buy-limit/sell-limit side flips as it crosses the market). Transient —
+  // never persisted; cleared once the order is placed or cancelled.
+  ticket: null,              // {entry, tpPips, slPips, volume}
+  trade: null,               // per-symbol MT5 facts for $ math {volume_*, digits, moneyPerPrice}
   measure: null,             // transient ruler {a, b}; not persisted
   measureDraft: false,       // true between the two clicks of a click-click ruler
   // Optimistic level edits, so a dragged SL/TP doesn't snap back while the
@@ -211,6 +219,7 @@ function render() {
   drawOrders();
   drawPositions();
   drawDrawings();
+  drawTicket();
   drawMeasure();
   drawCrosshair();
   updateLegend();
@@ -516,6 +525,8 @@ function drawPositions() {
     ctx.textBaseline = 'middle';
     ctx.fillText(c.text, c.x + 6, c.y + c.h / 2);
   }
+  // Delete buttons: × on entry closes the position, × on a TP/SL drops it.
+  for (const c of positionChips()) paintDeleteChip(c);
   ctx.restore();
 }
 
@@ -532,7 +543,8 @@ function chipRects() {
   for (const p of S.positions) {
     const y = yOf(p.price_open);
     if (y < plotY0() || y > plotY1()) continue;
-    let right = plotX1() - 8;
+    // Start left of the entry delete button so the "+ SL/TP" chips don't collide.
+    let right = plotX1() - TICKET_CHIP - 16;
     const add = (text, color, kind) => {
       const w = ctx.measureText(text).width + 12;
       const x = right - w;
@@ -560,8 +572,386 @@ function drawOrders() {
     if (sl) levelLine(sl, theme.loss, `SL ${fmtPrice(sl)}`, [2, 3], 1);
     if (tp) levelLine(tp, theme.profit, `TP ${fmtPrice(tp)}`, [2, 3], 1);
   }
+  // Delete buttons: × on the entry cancels the order, × on a TP/SL drops it.
+  for (const c of orderChips()) paintDeleteChip(c);
   ctx.restore();
 }
+
+/** Delete-button geometry for resting pending orders — entry (cancel) plus any
+ *  TP/SL (drop that leg).  Same rects used to paint and to hit-test. */
+function orderChips() {
+  const out = [];
+  const x = plotX1() - TICKET_CHIP - 10;
+  for (const o of S.orders) {
+    const add = (leg, price, color) => {
+      if (!price) return;
+      const y = yOf(price);
+      if (y < plotY0() || y > plotY1()) return;
+      out.push({ ticket: o.ticket, ref: o, leg, color, w: TICKET_CHIP, h: TICKET_CHIP,
+                 x, y: Math.round(y) - TICKET_CHIP / 2 });
+    };
+    add('price', levelPrice('order', o.ticket, 'price', o.price_open), theme.sel);
+    add('tp', levelPrice('order', o.ticket, 'tp', o.tp), theme.profit);
+    add('sl', levelPrice('order', o.ticket, 'sl', o.sl), theme.loss);
+  }
+  return out;
+}
+
+function orderChipAt(x, y) {
+  for (const c of orderChips()) {
+    if (x >= c.x && x <= c.x + c.w && y >= c.y && y <= c.y + c.h) return c;
+  }
+  return null;
+}
+
+/** Act on a pending-order delete button: cancel the order, or strip one leg. */
+function deleteOrderChip(c) {
+  const o = c.ref;
+  if (c.leg === 'price') {
+    window.DFX.send({ action: 'mt5_cancel', ticket: o.ticket });
+    $('hint').textContent = 'cancelling pending order…';
+    return;
+  }
+  const round = (v) => (v == null ? null : +v.toFixed(S.pip));
+  window.DFX.send({
+    action: 'mt5_modify_order',
+    ticket: o.ticket,
+    price: round(levelPrice('order', o.ticket, 'price', o.price_open)),
+    sl: c.leg === 'sl' ? null : round(levelPrice('order', o.ticket, 'sl', o.sl)),
+    tp: c.leg === 'tp' ? null : round(levelPrice('order', o.ticket, 'tp', o.tp)),
+  });
+  $('hint').textContent = `removing ${c.leg.toUpperCase()} from pending order…`;
+}
+
+/** Delete-button geometry for open positions — entry (close) plus any TP/SL
+ *  (drop that leg).  Same rects used to paint and to hit-test. */
+function positionChips() {
+  const out = [];
+  const x = plotX1() - TICKET_CHIP - 10;
+  for (const p of S.positions) {
+    const add = (leg, price, color) => {
+      if (!price) return;
+      const y = yOf(price);
+      if (y < plotY0() || y > plotY1()) return;
+      out.push({ ticket: p.ticket, ref: p, leg, color, w: TICKET_CHIP, h: TICKET_CHIP,
+                 x, y: Math.round(y) - TICKET_CHIP / 2 });
+    };
+    add('price', p.price_open, theme.sel);
+    add('tp', levelPrice('position', p.ticket, 'tp', p.tp), theme.profit);
+    add('sl', levelPrice('position', p.ticket, 'sl', p.sl), theme.loss);
+  }
+  return out;
+}
+
+function positionChipAt(x, y) {
+  for (const c of positionChips()) {
+    if (x >= c.x && x <= c.x + c.w && y >= c.y && y <= c.y + c.h) return c;
+  }
+  return null;
+}
+
+/** Act on a position delete button: close the whole position (entry) or strip
+ *  one of its SL/TP legs. */
+function deletePositionChip(c) {
+  const p = c.ref;
+  if (c.leg === 'price') {
+    window.DFX.send({ action: 'mt5_close', ticket: p.ticket });
+    $('hint').textContent = 'closing position…';
+    return;
+  }
+  const round = (v) => (v == null ? null : +v.toFixed(S.pip));
+  window.DFX.send({
+    action: 'mt5_modify',
+    ticket: p.ticket,
+    sl: c.leg === 'sl' ? null : round(levelPrice('position', p.ticket, 'sl', p.sl)),
+    tp: c.leg === 'tp' ? null : round(levelPrice('position', p.ticket, 'tp', p.tp)),
+  });
+  $('hint').textContent = `removing ${c.leg.toUpperCase()} from position…`;
+}
+
+// ── order ticket (pending buy-limit / sell-limit with TP & SL) ─────────────
+/** Format a lot size to the symbol's volume-step precision. */
+function fmtLot(v) {
+  const step = (S.trade && S.trade.volume_step) || 0.01;
+  const dec = (String(step).split('.')[1] || '').length;
+  return Number(v || 0).toFixed(dec);
+}
+
+/** Smallest lot a new ticket should default to. */
+function defaultLot() {
+  return (S.trade && S.trade.volume_min) || 0.1;
+}
+
+/** Resolve the draft ticket into concrete levels + dollar figures.
+ *
+ *  Side is dynamic: an entry resting BELOW the market is a buy limit, ABOVE it a
+ *  sell limit — exactly what the user asked for. TP is on the winning side of
+ *  entry, SL on the losing side, both derived from the stored pip distances so a
+ *  drag of the entry line carries them along and flips them when it crosses. */
+function ticketLevels() {
+  const t = S.ticket;
+  if (!t) return null;
+  const last = S.candles[S.candles.length - 1];
+  const market = last ? last.close : t.entry;
+  const buy = t.entry < market;
+  const pipU = Math.pow(10, -S.pip);
+  // TP / SL are optional: null pips means that leg has been deleted.
+  const tp = t.tpPips == null ? null
+    : (buy ? t.entry + t.tpPips * pipU : t.entry - t.tpPips * pipU);
+  const sl = t.slPips == null ? null
+    : (buy ? t.entry - t.slPips * pipU : t.entry + t.slPips * pipU);
+  const mpp = S.trade && S.trade.moneyPerPrice;
+  const vol = t.volume || 0;
+  const money = (price) => (price == null || !mpp ? null : Math.abs(price - t.entry) * mpp * vol);
+  return { buy, side: buy ? 'buy' : 'sell', entry: t.entry, tp, sl,
+           tpMoney: money(tp), slMoney: money(sl), pipU };
+}
+
+/** Right-hand delete chips for each present ticket line (entry / TP / SL).
+ *  Pure geometry, so the hit-test and the paint use exactly the same rects. */
+const TICKET_CHIP = 20;
+function ticketChips() {
+  const L = ticketLevels();
+  if (!L) return [];
+  const out = [];
+  const add = (leg, price) => {
+    if (price == null) return;
+    const y = yOf(price);
+    if (y < plotY0() || y > plotY1()) return;
+    out.push({ leg, x: plotX1() - TICKET_CHIP - 10, y: Math.round(y) - TICKET_CHIP / 2,
+               w: TICKET_CHIP, h: TICKET_CHIP,
+               color: leg === 'tp' ? theme.profit : leg === 'sl' ? theme.loss : theme.sel });
+  };
+  add('entry', L.entry);
+  add('tp', L.tp);
+  add('sl', L.sl);
+  return out;
+}
+
+/** Which delete chip (if any) is under the cursor. */
+function ticketChipAt(x, y) {
+  for (const c of ticketChips()) {
+    if (x >= c.x && x <= c.x + c.w && y >= c.y && y <= c.y + c.h) return c;
+  }
+  return null;
+}
+
+/** Remove one leg. Deleting the entry deletes the whole order. */
+function deleteTicketLeg(leg) {
+  if (!S.ticket) return;
+  if (leg === 'entry') { cancelTicket(); return; }
+  if (leg === 'tp') S.ticket.tpPips = null;
+  else if (leg === 'sl') S.ticket.slPips = null;
+  updateOrderBar();
+  draw();
+}
+
+/** Rounded dollar amount, e.g. "+$123" / "−$1,240", or '' when MT5 can't price it. */
+function fmtMoney(m, sign) {
+  if (m == null) return '';
+  return `  ${sign}$${Math.round(m).toLocaleString()}`;
+}
+
+/** The entry / TP / SL lines, with translucent profit & loss zones behind. */
+function drawTicket() {
+  const L = ticketLevels();
+  if (!L) return;
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(plotX0(), plotY0(), plotW(), plotH());
+  ctx.clip();
+
+  const zone = (p1, p2, color) => {
+    const top = Math.max(plotY0(), Math.min(yOf(p1), yOf(p2)));
+    const bot = Math.min(plotY1(), Math.max(yOf(p1), yOf(p2)));
+    if (bot <= top) return;
+    ctx.fillStyle = color + '14';         // ~8% — a hint, not a wash
+    ctx.fillRect(plotX0(), top, plotW(), bot - top);
+  };
+  if (L.tp != null) zone(L.entry, L.tp, theme.profit);
+  if (L.sl != null) zone(L.entry, L.sl, theme.loss);
+  ctx.restore();
+
+  ctx.save();
+  ctx.font = '10px ui-monospace, Menlo, Consolas, monospace';
+  const head = (L.buy ? 'BUY LIMIT' : 'SELL LIMIT') + ' ' + fmtLot(S.ticket.volume);
+  levelLine(L.entry, theme.sel, head, [7, 4], 1.6);
+  if (L.tp != null) levelLine(L.tp, theme.profit, `TP ${fmtPrice(L.tp)}${fmtMoney(L.tpMoney, '+')}`, [3, 3], 1.3);
+  if (L.sl != null) levelLine(L.sl, theme.loss, `SL ${fmtPrice(L.sl)}${fmtMoney(L.slMoney, '−')}`, [3, 3], 1.3);
+
+  for (const c of ticketChips()) paintDeleteChip(c);
+  ctx.restore();
+}
+
+/** A clearly-visible round-square × delete button, used by the draft ticket and
+ *  by resting pending orders alike. */
+function paintDeleteChip(c) {
+  ctx.save();
+  ctx.setLineDash([]);
+  ctx.lineCap = 'round';
+  ctx.shadowColor = 'rgba(0,0,0,.5)';
+  ctx.shadowBlur = 5;
+  ctx.shadowOffsetY = 1;
+  ctx.fillStyle = c.color;
+  roundRect(c.x, c.y, c.w, c.h, 5); ctx.fill();
+  ctx.restore();
+
+  ctx.save();
+  ctx.setLineDash([]);
+  ctx.strokeStyle = 'rgba(255,255,255,.92)';
+  ctx.lineWidth = 1;
+  roundRect(c.x + 0.5, c.y + 0.5, c.w - 1, c.h - 1, 5); ctx.stroke();
+  ctx.strokeStyle = '#ffffff';
+  ctx.lineWidth = 2;
+  ctx.lineCap = 'round';
+  const p = 6, cx = c.x, cy = c.y;
+  ctx.beginPath();
+  ctx.moveTo(cx + p, cy + p); ctx.lineTo(cx + c.w - p, cy + c.h - p);
+  ctx.moveTo(cx + c.w - p, cy + p); ctx.lineTo(cx + p, cy + c.h - p);
+  ctx.stroke();
+  ctx.restore();
+}
+
+/** Which ticket line (if any) is under the cursor — for dragging. */
+function ticketAt(x, y) {
+  const L = ticketLevels();
+  if (!L) return null;
+  if (x < plotX0() || x > plotX1() || y < plotY0() || y > plotY1()) return null;
+  let best = null, bestD = 6;
+  for (const lg of [{ leg: 'tp', price: L.tp }, { leg: 'sl', price: L.sl },
+                    { leg: 'entry', price: L.entry }]) {
+    if (lg.price == null) continue;
+    const d = Math.abs(yOf(lg.price) - y);
+    if (d < bestD) { bestD = d; best = lg; }
+  }
+  return best;
+}
+
+/** Apply a drag of one ticket line. Entry moves freely (side re-resolves);
+ *  TP/SL update their pip distance, clamped to the correct side of entry. */
+function dragTicket(leg, price) {
+  const t = S.ticket;
+  if (!t) return;
+  const pipU = Math.pow(10, -S.pip);
+  if (leg === 'entry') { t.entry = price; return; }
+  const last = S.candles[S.candles.length - 1];
+  const market = last ? last.close : t.entry;
+  const buy = t.entry < market;
+  const eps = pipU;
+  let good;
+  if (leg === 'tp') good = buy ? Math.max(price, t.entry + eps) : Math.min(price, t.entry - eps);
+  else good = buy ? Math.min(price, t.entry - eps) : Math.max(price, t.entry + eps);
+  const pips = Math.max(1, Math.round(Math.abs(good - t.entry) / pipU));
+  if (leg === 'tp') t.tpPips = pips; else t.slPips = pips;
+}
+
+/** Start a fresh ticket centred on a clicked price. */
+function createTicket(price) {
+  if (S.readOnly) return;
+  S.ticket = { entry: price, tpPips: TICKET_TP_PIPS, slPips: TICKET_SL_PIPS,
+               volume: defaultLot() };
+  updateOrderBar();
+  draw();
+}
+
+function cancelTicket() {
+  S.ticket = null;
+  hideOrderBar();
+  showBubble(null);
+  draw();
+}
+
+// ── order-ticket action bar (lot size + place button, above the zoom pad) ───
+function hideOrderBar() {
+  const bar = $('order-bar');
+  if (!bar) return;
+  bar.hidden = true;
+  bar.style.display = 'none';
+}
+
+/** Refresh the floating bar from the current ticket: side, colour, lot, $ R:R. */
+function updateOrderBar() {
+  const bar = $('order-bar');
+  if (!bar) return;
+  const L = ticketLevels();
+  if (!L) { hideOrderBar(); return; }
+  bar.hidden = false;
+  bar.style.display = 'flex';
+
+  const col = L.buy ? theme.up : theme.down;
+  const side = $('order-side');
+  side.textContent = L.buy ? 'BUY LIMIT' : 'SELL LIMIT';
+  side.style.background = col;
+
+  const place = $('order-place');
+  place.style.setProperty('--aura', col);
+  place.textContent = `Place ${L.buy ? 'buy' : 'sell'} limit`;
+  place.disabled = false;
+
+  const lot = $('order-lot');
+  if (S.trade) { lot.min = S.trade.volume_min; lot.step = S.trade.volume_step; lot.max = S.trade.volume_max; }
+  if (document.activeElement !== lot) lot.value = fmtLot(S.ticket.volume);
+
+  const off = '<span class="opacity-45">off</span>';
+  const rr = (S.ticket.tpPips && S.ticket.slPips) ? (S.ticket.tpPips / S.ticket.slPips) : 0;
+  const tp = S.ticket.tpPips == null
+    ? `<span style="color:${theme.profit}">TP ${off}</span>`
+    : `<span style="color:${theme.profit}">TP ${S.ticket.tpPips}p${fmtMoney(L.tpMoney, '+')}</span>`;
+  const sl = S.ticket.slPips == null
+    ? `<span style="color:${theme.loss}">SL ${off}</span>`
+    : `<span style="color:${theme.loss}">SL ${S.ticket.slPips}p${fmtMoney(L.slMoney, '−')}</span>`;
+  $('order-rr').innerHTML = `${tp}<br>${sl}${rr ? `  ·  R:R ${rr.toFixed(2)}` : ''}`;
+}
+
+function stepLot(dir) {
+  if (!S.ticket) return;
+  const tr = S.trade || {};
+  const step = tr.volume_step || 0.01, min = tr.volume_min || 0.01, max = tr.volume_max || 100;
+  const dec = (String(step).split('.')[1] || '').length;
+  let v = (S.ticket.volume || min) + dir * step;
+  v = Math.min(max, Math.max(min, v));
+  S.ticket.volume = +v.toFixed(dec);
+  updateOrderBar();
+  draw();
+}
+
+/** Send the ticket to the terminal as a resting limit order with SL/TP. */
+function placeTicket() {
+  const L = ticketLevels();
+  if (!L || S.readOnly) return;
+  const tr = S.trade;
+  const vol = S.ticket.volume;
+  if (tr && (vol < tr.volume_min || vol > tr.volume_max)) {
+    $('hint').textContent = `lot must be ${tr.volume_min}–${tr.volume_max}`;
+    return;
+  }
+  const dp = tr && tr.digits != null ? tr.digits : S.pip;
+  const r = (v) => +v.toFixed(dp);
+  const btn = $('order-place');
+  btn.disabled = true;
+  btn.textContent = 'placing…';
+  window.DFX.send({
+    action: 'mt5_pending', symbol: S.symbol, side: L.side,
+    volume: vol, price: r(L.entry),
+    sl: L.sl == null ? null : r(L.sl),
+    tp: L.tp == null ? null : r(L.tp),
+  });
+  $('hint').textContent = `placing ${L.side} limit ${fmtLot(vol)} @ ${fmtPrice(L.entry)}…`;
+}
+
+(function wireOrderBar() {
+  const minus = $('order-lot-minus'), plus = $('order-lot-plus'), lot = $('order-lot');
+  if (minus) minus.onclick = () => stepLot(-1);
+  if (plus) plus.onclick = () => stepLot(1);
+  if (lot) lot.oninput = () => {
+    if (!S.ticket) return;
+    const v = parseFloat(lot.value);
+    if (Number.isFinite(v)) { S.ticket.volume = v; draw(); }
+  };
+  const cancel = $('order-cancel'), place = $('order-place');
+  if (cancel) cancel.onclick = cancelTicket;
+  if (place) place.onclick = placeTicket;
+})();
 
 // ── measure tool (the ruler) ───────────────────────────────────────────────
 /** TradingView-style ruler: a shaded box from A to B with pips, price move,
@@ -764,6 +1154,16 @@ function drawDrawings() {
     // Horizontal lines get a price tag on the axis, like a broker chart.
     if (d.type === 'hline' || d.type === 'hray') {
       axisTags.push({ y: a.y, price: d.a.price, color: d.color || theme.line });
+      // A bell marks a line that carries a live price alert.
+      if (d.alertId) {
+        ctx.save();
+        ctx.setLineDash([]);
+        ctx.font = '13px system-ui, "Segoe UI Emoji", sans-serif';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('🔔', plotX0() + 8, a.y - 9);
+        ctx.restore();
+      }
     }
 
     if (selected) {
@@ -856,6 +1256,23 @@ function showStyleBar() {
     b.classList.toggle('bg-accent', (S.selected.style || 'solid') === b.dataset.style);
     b.classList.toggle('text-white', (S.selected.style || 'solid') === b.dataset.style);
   });
+
+  // The alert button only applies to a horizontal line (a price level), and
+  // only in the desktop shell that can reach the backend.
+  const alertBtn = $('style-alert');
+  if (alertBtn) {
+    const isLevel = S.selected.type === 'hline' || S.selected.type === 'hray';
+    const on = isLevel && window.ALERTS && window.ALERTS.supported;
+    alertBtn.hidden = !on;
+    alertBtn.style.display = on ? 'inline-flex' : 'none';
+    if (on) {
+      const has = window.ALERTS.hasAlert(S.selected);
+      const lbl = $('style-alert-label');
+      if (lbl) lbl.textContent = has ? 'Alert ✓' : 'Alert';
+      alertBtn.classList.toggle('text-accent', has);
+      alertBtn.title = has ? 'Edit or remove the alert on this line' : 'Add a price alert on this line';
+    }
+  }
 }
 
 function hideStyleBar() {
@@ -1103,6 +1520,13 @@ function localPos(ev) {
 canvas.addEventListener('pointerdown', (ev) => {
   const { x, y } = localPos(ev);
   ensureGeometry();
+
+  // Watching a live session: the view belongs to the host, so no panning,
+  // zooming, price/time-scale drags, drawing or selecting. The crosshair still
+  // tracks through pointermove. When the session ends readOnly clears and the
+  // chart becomes fully the viewer's own.
+  if (S.readOnly) return;
+
   canvas.setPointerCapture(ev.pointerId);
 
   if (x > plotX1()) {                       // price scale: drag to zoom it
@@ -1114,12 +1538,26 @@ canvas.addEventListener('pointerdown', (ev) => {
     return;
   }
 
-  // Watching a live session: panning and zooming stay, but every gesture that
-  // would create, move or select a drawing is dropped here. The server refuses
-  // these too — this just stops the local chart from lying about it.
-  if (S.readOnly) {
-    S.gesture = { kind: 'pan', x0: x, y0: y, right0: S.viewRight, shift0: S.priceShift };
-    return;
+  // Dragging one of the draft order-ticket lines is the active editing focus,
+  // so it wins over grabbing a live position's level underneath it.
+  if (S.tool === 'cursor' && S.ticket) {
+    const chip = ticketChipAt(x, y);
+    if (chip) { deleteTicketLeg(chip.leg); return; }
+    const leg = ticketAt(x, y);
+    if (leg) {
+      S.gesture = { kind: 'ticket', leg: leg.leg };
+      draw();
+      return;
+    }
+  }
+
+  // A resting order's / open position's delete button cancels/closes it
+  // (entry) or drops a leg (TP/SL) — checked before the level drag so × wins.
+  if (S.tool === 'cursor') {
+    const oc = orderChipAt(x, y);
+    if (oc) { deleteOrderChip(oc); return; }
+    const pc = positionChipAt(x, y);
+    if (pc) { deletePositionChip(pc); return; }
   }
 
   // Grabbing an SL/TP (or a pending order's entry) beats every other gesture,
@@ -1145,6 +1583,14 @@ canvas.addEventListener('pointerdown', (ev) => {
     draw();
     return;
   }
+  // Order tool: one click drops a pending-order ticket at that price, then
+  // hands back to the cursor so the three lines can be dragged and placed.
+  if (S.tool === 'order') {
+    createTicket(dataPoint(x, y).price);
+    setTool('cursor');
+    return;
+  }
+
   // A plain click with the cursor clears a lingering ruler.
   if (S.tool === 'cursor' && S.measure) { S.measure = null; }
 
@@ -1218,6 +1664,10 @@ canvas.addEventListener('pointermove', (ev) => {
     S.optimistic.set(levelKey(h.entity, h.ticket, h.kind),
                      { price: h.price, until: Date.now() + 8000 });
     showLevelBubble(h);
+  } else if (g?.kind === 'ticket') {
+    dragTicket(g.leg, magnetPrice(x, y));
+    updateOrderBar();
+    showTicketBubble(g.leg);
   } else if (g?.kind === 'handle') {
     g.d[g.part] = dataPoint(x, y);
     showBubble(g.d);
@@ -1232,9 +1682,14 @@ canvas.addEventListener('pointermove', (ev) => {
     showBubble(S.draft);
   } else {
     const drawing = S.tool !== 'cursor';
+    const onChip = !drawing
+      ? ((S.ticket && ticketChipAt(x, y)) || orderChipAt(x, y) || positionChipAt(x, y))
+      : null;
+    const onTicket = (!drawing && S.ticket) ? ticketAt(x, y) : null;
     const onLevel = !drawing ? levelAt(x, y) : null;
     const over = (!drawing && x <= plotX1() && y <= plotY1()) ? pick(x, y) : null;
-    canvas.style.cursor = onLevel ? 'ns-resize'
+    canvas.style.cursor = onChip ? 'pointer'
+      : (onTicket || onLevel) ? 'ns-resize'
       : over ? (over.part === 'body' ? 'move' : 'grab')
       : drawing ? 'crosshair'
       : x > plotX1() ? 'ns-resize' : y > plotY1() ? 'ew-resize' : 'default';
@@ -1257,6 +1712,31 @@ function showLevelBubble(h) {
     `<span class="ml-2 opacity-70">${fmtPips(delta)} pips from entry</span>`;
   el.style.left = `${Math.min(plotX1() - 190, plotX0() + 12)}px`;
   el.style.top = `${Math.min(Math.max(yOf(h.price) - 34, 4), S.H - 40)}px`;
+  el.classList.remove('hidden');
+}
+
+/** Live readout while dragging an order-ticket line: price, pip distance, and
+ *  the dollar profit/loss for the TP/SL legs. */
+function showTicketBubble(leg) {
+  const L = ticketLevels();
+  if (!L) return;
+  const el = $('bubble');
+  const price = leg === 'tp' ? L.tp : leg === 'sl' ? L.sl : L.entry;
+  let head, tail = '';
+  if (leg === 'entry') {
+    head = `${L.buy ? 'BUY LIMIT' : 'SELL LIMIT'} ${fmtPrice(price)}`;
+  } else if (leg === 'tp') {
+    head = `TP ${fmtPrice(price)}`;
+    tail = `${S.ticket.tpPips} pips${fmtMoney(L.tpMoney, '+')}`;
+  } else {
+    head = `SL ${fmtPrice(price)}`;
+    tail = `${S.ticket.slPips} pips${fmtMoney(L.slMoney, '−')}`;
+  }
+  const color = leg === 'tp' ? theme.profit : leg === 'sl' ? theme.loss : theme.sel;
+  el.innerHTML = `<span class="font-bold" style="color:${color}">${head}</span>` +
+    (tail ? `<span class="ml-2 opacity-80">${tail}</span>` : '');
+  el.style.left = `${Math.min(plotX1() - 190, plotX0() + 12)}px`;
+  el.style.top = `${Math.min(Math.max(yOf(price) - 34, 4), S.H - 40)}px`;
   el.classList.remove('hidden');
 }
 
@@ -1283,6 +1763,11 @@ function endGesture() {
     // A bare click (no drag) must not commit a level sitting on the entry.
     if (g.moved) commitLevel(g.handle);
     else S.optimistic.delete(levelKey(g.handle.entity, g.handle.ticket, g.handle.kind));
+    showBubble(null);
+  }
+  if (g && g.kind === 'ticket') {
+    // The ticket is a local draft — nothing to persist; just refresh the bar.
+    updateOrderBar();
     showBubble(null);
   }
   S.gesture = null;
@@ -1327,6 +1812,7 @@ canvas.addEventListener('pointerleave', () => {
 
 canvas.addEventListener('wheel', (ev) => {
   ev.preventDefault();
+  if (S.readOnly) return;         // viewer follows the host's zoom, not its own
   const { x } = localPos(ev);
   const factor = Math.exp(ev.deltaY / 500);
   const anchor = iOf(Math.min(x, plotX1()));
@@ -1337,13 +1823,16 @@ canvas.addEventListener('wheel', (ev) => {
   draw();
 }, { passive: false });
 
-canvas.addEventListener('dblclick', () => { resetView(); draw(); });
+canvas.addEventListener('dblclick', () => { if (S.readOnly) return; resetView(); draw(); });
 
 function clampView() {
   const n = S.candles.length;
   S.bars = Math.min(MAX_BARS, Math.max(MIN_BARS, S.bars));
   S.viewRight = Math.min(n - 1 + S.bars * 0.6, Math.max(S.bars * 0.4, S.viewRight));
   maybeBackfill();
+  // Every pan/zoom/scroll funnels through here, so it's the one place to mirror
+  // the host's viewport to viewers.
+  if (window.LIVE && typeof window.LIVE.onView === 'function') window.LIVE.onView();
 }
 
 /** Pull the next page of older candles once the view nears the oldest bar,
@@ -1375,6 +1864,7 @@ function applyBackfill(list) {
 
 /** Zoom the time axis about the right edge, so the newest bar stays put. */
 function zoomBy(factor) {
+  if (S.readOnly) return;         // a live viewer mirrors the host's zoom
   const anchor = S.viewRight;
   S.bars = Math.min(MAX_BARS, Math.max(MIN_BARS, S.bars * factor));
   S.viewRight = anchor;
@@ -1390,6 +1880,7 @@ function resetView() {
   S.viewRight = n - 1 + 2;
   S.priceZoom = 1;
   S.priceShift = 0;
+  clampView();           // clamp + mirror the reset to viewers
 }
 
 document.addEventListener('keydown', (ev) => {
@@ -1401,9 +1892,11 @@ document.addEventListener('keydown', (ev) => {
   else if (k === 'z') setTool('rect');
   else if (k === 'p') setTool('range');
   else if (k === 'e') setTool('measure');
+  else if (k === 'o') setTool('order');
   else if (k === 'escape') {
     S.draft = null; S.measure = null; showBubble(null);
     hideStyleBar(); S.selected = null; setTool('cursor');
+    if (S.ticket) cancelTicket();
   }
   else if (k === 'm') setMagnet(!S.magnet);
   else if (ev.key === '+' || ev.key === '=') zoomBy(1 / 1.3);
@@ -1411,6 +1904,7 @@ document.addEventListener('keydown', (ev) => {
   else if (ev.key === 'Delete' || ev.key === 'Backspace') {
     if (S.readOnly) return;
     if (S.selected) {
+      if (window.ALERTS) window.ALERTS.dropForDrawing(S.selected);
       S.drawings = S.drawings.filter((d) => d !== S.selected);
       S.selected = null;
       hideStyleBar();
@@ -1500,6 +1994,7 @@ $('symbol').onchange = (ev) => {
   S.symbol = ev.target.value;
   S.symbolName = ev.target.options[ev.target.selectedIndex].textContent;
   S.positions = [];
+  cancelTicket();               // the draft entry price meant the old symbol
   loadDrawings();
   saveSettings();
   requestData();
@@ -1529,6 +2024,7 @@ $('clear').onclick = () => {
   // Context-aware: with a drawing selected, delete only that one; with none
   // selected, clear everything (but confirm, so it can't wipe all by accident).
   if (S.selected) {
+    if (window.ALERTS) window.ALERTS.dropForDrawing(S.selected);
     S.drawings = S.drawings.filter((d) => d !== S.selected);
     S.selected = null;
     saveDrawings(); showBubble(null); hideStyleBar(); draw();
@@ -1536,6 +2032,7 @@ $('clear').onclick = () => {
   }
   if (!S.drawings.length) return;
   if (!confirm(`Delete all ${S.drawings.length} drawings?`)) return;
+  if (window.ALERTS) for (const d of S.drawings) window.ALERTS.dropForDrawing(d);
   S.drawings = []; S.draft = null;
   saveDrawings(); showBubble(null); hideStyleBar(); draw();
 };
@@ -1566,9 +2063,20 @@ $('clear').onclick = () => {
   });
   $('style-delete').onclick = () => {
     if (!S.selected) return;
+    if (window.ALERTS) window.ALERTS.dropForDrawing(S.selected);   // remove its backend alert too
     S.drawings = S.drawings.filter((d) => d !== S.selected);
     S.selected = null;
     saveDrawings(); hideStyleBar(); showBubble(null); draw();
+  };
+  const alertBtn = $('style-alert');
+  if (alertBtn) alertBtn.onclick = () => {
+    if (!S.selected || !window.ALERTS) return;
+    const last = S.candles[S.candles.length - 1];
+    window.ALERTS.openEditor(S.selected, {
+      symbol: S.symbol, symbolName: S.symbolName,
+      price: +S.selected.a.price.toFixed(S.pip),
+      basePrice: last ? last.close : S.selected.a.price,
+    }, () => { saveDrawings(); showStyleBar(); draw(); });
   };
 })();
 $('reset').onclick = () => { resetView(); draw(); };
@@ -1751,6 +2259,24 @@ function connect() {
         applyPatch(m.candle);
         break;
     }
+    // The order ticket owns its own pending-order result: clear on success,
+    // re-arm the button and report on failure.
+    if (m.type === 'mt5_pending' && S.ticket) {
+      const ok = m.result && m.result.ok;
+      if (ok) {
+        S.ticket = null;
+        hideOrderBar();
+        showBubble(null);
+        $('hint').textContent = `pending order placed${m.result.order ? ` · #${m.result.order}` : ''}`;
+      } else {
+        updateOrderBar();     // resets the button label + enabled state
+        $('hint').textContent = `order rejected: ${m.result ? m.result.comment : 'error'}`;
+      }
+      draw();
+    }
+    // A thrown bridge error (bad volume, no quote…) comes back generically.
+    if (m.type === 'mt5_result_error' && S.ticket) updateOrderBar();
+
     // Anything MetaTrader-related belongs to the trade panel.
     if (m.type && m.type.startsWith('mt5') && window.DFX.onMessage) {
       window.DFX.onMessage(m);
@@ -1777,6 +2303,21 @@ window.DFX = {
   setAvoidRect(rect) {
     S.avoid = rect;
     draw();
+  },
+  /** Per-symbol MT5 facts the order ticket needs: volume limits, digits and
+   *  money-per-price (dollars per 1.0 price move per lot). null when untradable. */
+  setTradeMeta(meta) {
+    S.trade = meta || null;
+    if (S.ticket) updateOrderBar();
+    draw();
+  },
+  /** An alert fired: clear the bell on its line (one-shot) if it's loaded here. */
+  markAlertTriggered(alertId) {
+    let hit = false;
+    for (const d of S.drawings) {
+      if (d.alertId === alertId) { d.alertId = null; d.alertNote = ''; hit = true; }
+    }
+    if (hit) { saveDrawings(); draw(); }
   },
   /** Drop optimistic overrides once the terminal confirms a change. */
   clearOptimistic() {
