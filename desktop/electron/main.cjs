@@ -5,7 +5,7 @@
  * actually accepts a connection, point the window at it, and make sure the
  * child dies with the app (including on hard kills).
  */
-const { app, BrowserWindow, Menu, shell, screen, ipcMain } = require('electron');
+const { app, BrowserWindow, Menu, shell, screen, ipcMain, Notification } = require('electron');
 const { spawn, spawnSync } = require('child_process');
 const path = require('path');
 const net = require('net');
@@ -604,6 +604,30 @@ ipcMain.handle('alerts-create', (_e, payload) =>
 ipcMain.handle('alerts-delete', (_e, id) =>
   liveApi(`/api/alerts/${encodeURIComponent(id)}/`, { method: 'DELETE' }));
 
+// A triggered alert shows a native OS notification (floats over any app, even
+// when the chart window is minimised or in the background) and flashes the
+// window in the taskbar. Clicking the notification brings the window forward.
+ipcMain.on('alert-notify', (e, payload) => {
+  const { title, body } = payload || {};
+  const win = BrowserWindow.fromWebContents(e.sender);
+  try {
+    if (Notification.isSupported()) {
+      const n = new Notification({
+        title: title || 'DropletFX price alert',
+        body: body || '',
+        urgency: 'critical',            // Linux hint; ignored elsewhere
+      });
+      n.on('click', () => {
+        if (win) { if (win.isMinimized()) win.restore(); win.show(); win.focus(); }
+      });
+      n.show();
+    }
+  } catch { /* notifications unavailable */ }
+  if (win) {
+    try { win.flashFrame(true); } catch {}
+  }
+});
+
 /** Startup: splash while the server boots, then login or the launcher. */
 async function boot() {
   const splash = createSplash();
@@ -702,6 +726,9 @@ function allowCameraForOurPages() {
 }
 
 app.whenReady().then(() => {
+  // Windows shows toast notifications under this identity; without it, alert
+  // notifications may not appear (especially in dev).
+  app.setAppUserModelId('fx.droplet.charts');
   buildMenu();
   allowCameraForOurPages();
   boot();

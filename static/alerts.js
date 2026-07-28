@@ -112,6 +112,15 @@
 
   function onTrigger(m) {
     playAlarm();
+    // Native OS notification + taskbar flash, so the alert surfaces over other
+    // apps even when this window isn't focused (the in-page card is only visible
+    // when the window is).
+    try {
+      const label = m.symbol_name || m.symbol || 'Price';
+      const now = (m.triggered_price != null) ? ` (now ${m.triggered_price})` : '';
+      D.alertNotify({ title: `🔔 ${label} hit ${m.price}`,
+                      body: m.description || `Price reached ${m.price}${now}` });
+    } catch {}
     // Let the chart clear the bell on the line that fired (if it's loaded here).
     try { window.DFX && window.DFX.markAlertTriggered && window.DFX.markAlertTriggered(m.id); }
     catch {}

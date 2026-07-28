@@ -30,4 +30,7 @@ contextBridge.exposeInMainWorld('dfxDesktop', {
   alertsList: () => ipcRenderer.invoke('alerts-list'),
   alertsCreate: (payload) => ipcRenderer.invoke('alerts-create', payload),
   alertsDelete: (id) => ipcRenderer.invoke('alerts-delete', id),
+  // Fire a native OS notification + flash the window when an alert triggers, so
+  // it surfaces over whatever app is in front.
+  alertNotify: (payload) => ipcRenderer.send('alert-notify', payload),
 });
